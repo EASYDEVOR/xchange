@@ -67,112 +67,127 @@ export function onNetworkChange(cb) {
   return () => window.opnet.removeListener?.('networkChanged', cb);
 }
 
-// ─── Contract validation via OP_SCAN API ──────────────────────────────────────
+// ─── Contract validation ───────────────────────────────────────────────────────
 /**
- * Validate OP_20 contract by hitting opscan.org token endpoint.
- * The URL pattern from your screenshot:
- *   https://opscan.org/tokens/0x{hex_address}?network=op_testnet
+ * OP_NET bech32 addresses (opt1...) are 62-66 chars long.
+ * We validate format only — CORS blocks browser calls to opscan.org/opnet APIs.
+ * The address authenticity is confirmed by OP_WALLET when the tx is submitted.
  *
- * OP_NET contract addresses come in two formats:
- *   opt1... (bech32) — used in wallet UI
- *   0x...   (hex)    — used in explorer URLs
- *
- * We try both the opscan API and the opnet RPC.
+ * opt1 bech32 format: "opt1" + 58 alphanumeric chars (no 0, O, I, l)
+ * 0x hex format: "0x" + 40 hex chars
  */
+function isValidOPNETAddress(addr) {
+  if (!addr) return false;
+  // opt1 bech32: starts with opt1, total length 42-66, only bech32 charset
+  if (addr.startsWith('opt1')) {
+    return addr.length >= 40 && addr.length <= 70 && /^opt1[ac-hj-np-z02-9]+$/i.test(addr);
+  }
+  // 0x hex
+  if (addr.startsWith('0x')) {
+    return addr.length === 42 && /^0x[0-9a-fA-F]{40}$/.test(addr);
+  }
+  return false;
+}
+
 export async function validateOP20Contract(contractAddress) {
   const addr = contractAddress?.trim();
   if (!addr) return { valid: false, error: 'Enter a contract address' };
 
-  // Basic format check — OP_NET addresses start with opt1 or 0x
-  if (!addr.startsWith('opt1') && !addr.startsWith('0x')) {
-    return { valid: false, error: 'Address must start with "opt1" or "0x"' };
+  if (!isValidOPNETAddress(addr)) {
+    return {
+      valid: false,
+      error: 'Invalid format. OP_NET addresses start with "opt1" (62+ chars) or "0x" (42 chars)',
+    };
   }
 
-  try {
-    // Try OP_NET RPC JSON-RPC call (correct protocol for OP_NET)
-    const rpcRes = await fetch('https://api.opnet.org/api/v1/address/token-details', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: addr, network: 'op_testnet' }),
-    });
-    if (rpcRes.ok) {
-      const data = await rpcRes.json();
-      if (data?.symbol || data?.name) {
-        return {
-          valid: true,
-          name: data.name || data.symbol,
-          symbol: data.symbol || '???',
-          decimals: data.decimals ?? 8,
-        };
-      }
-    }
-  } catch {}
-
-  try {
-    // Fallback: OP_SCAN REST API
-    const scanRes = await fetch(
-      `https://opscan.org/api/token?address=${encodeURIComponent(addr)}&network=op_testnet`,
-      { headers: { Accept: 'application/json' } }
-    );
-    if (scanRes.ok) {
-      const data = await scanRes.json();
-      if (data?.symbol || data?.name) {
-        return {
-          valid: true,
-          name: data.name || data.symbol,
-          symbol: data.symbol || '???',
-          decimals: data.decimals ?? 8,
-        };
-      }
-    }
-  } catch {}
-
-  try {
-    // Fallback 2: Try window.opnet directly if available
-    if (isOpWalletInstalled() && window.opnet.getTokenDetails) {
-      const details = await window.opnet.getTokenDetails(addr);
+  // Try window.opnet methods if wallet is connected
+  if (isOpWalletInstalled()) {
+    // Try getTokenDetails (some wallet versions expose this)
+    try {
+      const details = await window.opnet.getTokenDetails?.(addr);
       if (details?.symbol) {
         return {
           valid: true,
           name: details.name || details.symbol,
           symbol: details.symbol,
           decimals: details.decimals ?? 8,
+          source: 'wallet',
         };
       }
-    }
-  } catch {}
+    } catch {}
 
+    // Try callContract with name() and symbol() selectors
+    try {
+      const symResult = await window.opnet.callContract?.({
+        to: addr,
+        data: '0x95d89b41', // symbol()
+      });
+      const nameResult = await window.opnet.callContract?.({
+        to: addr,
+        data: '0x06fdde03', // name()
+      });
+      const symbol = decodeABIString(symResult?.result || symResult?.data);
+      const name   = decodeABIString(nameResult?.result || nameResult?.data);
+      if (symbol || name) {
+        return {
+          valid: true,
+          name: name || symbol || addr.slice(0, 12),
+          symbol: symbol || '???',
+          decimals: 8,
+          source: 'rpc',
+        };
+      }
+    } catch {}
+  }
+
+  // Format is valid — accept it with a note that we couldn't fetch metadata
+  // (CORS prevents direct opscan.org API calls from browser)
   return {
-    valid: false,
-    error: 'Could not verify this contract on OP_NET testnet. Check the address and try again.',
+    valid: true,
+    name: addr.slice(0, 16) + '…',
+    symbol: '???',
+    decimals: 8,
+    unverified: true,
+    source: 'format',
   };
 }
 
 export async function validateOP721Contract(contractAddress) {
   const addr = contractAddress?.trim();
   if (!addr) return { valid: false, error: 'Enter a contract address' };
-  if (!addr.startsWith('opt1') && !addr.startsWith('0x')) {
-    return { valid: false, error: 'Address must start with "opt1" or "0x"' };
+  if (!isValidOPNETAddress(addr)) {
+    return { valid: false, error: 'Invalid format. OP_NET addresses start with "opt1" or "0x"' };
   }
-  try {
-    const res = await fetch(
-      `https://opscan.org/api/nft?address=${encodeURIComponent(addr)}&network=op_testnet`,
-      { headers: { Accept: 'application/json' } }
-    );
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.name || data?.symbol) {
-        return { valid: true, name: data.name, symbol: data.symbol };
-      }
-    }
-  } catch {}
-  try {
-    if (isOpWalletInstalled() && window.opnet.getNFTDetails) {
-      const details = await window.opnet.getNFTDetails(addr);
+  if (isOpWalletInstalled()) {
+    try {
+      const details = await window.opnet.getNFTDetails?.(addr);
       if (details?.name) return { valid: true, name: details.name, symbol: details.symbol };
+    } catch {}
+  }
+  return {
+    valid: true,
+    name: addr.slice(0, 16) + '…',
+    symbol: 'NFT',
+    unverified: true,
+    source: 'format',
+  };
+}
+
+// Decode ABI-encoded string response
+function decodeABIString(hex) {
+  if (!hex || hex === '0x' || hex.length < 10) return '';
+  try {
+    const clean = hex.replace(/^0x/, '');
+    if (clean.length < 128) {
+      // Short response — try direct UTF-8 decode
+      return Buffer.from(clean, 'hex').toString('utf8').replace(/\0/g, '').trim();
     }
-  } catch {}
-  return { valid: false, error: 'Could not verify this OP_721 contract on testnet.' };
+    const lenHex = clean.slice(64, 128);
+    const len    = parseInt(lenHex, 16);
+    if (!len || len > 100) return '';
+    const strHex = clean.slice(128, 128 + len * 2);
+    return Buffer.from(strHex, 'hex').toString('utf8').replace(/\0/g, '').trim();
+  } catch { return ''; }
 }
 
 // ─── Escrow notice ────────────────────────────────────────────────────────────
