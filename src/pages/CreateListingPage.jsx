@@ -147,14 +147,23 @@ export function CreateListingPage({ wallet, onSubmit, onCancel, actionLoading })
                 {contractInfo && !validating && <span className="inp-spinner" style={{ color: 'var(--green)' }}>✅</span>}
               </div>
               {contractInfo && (
-                <div className="contract-preview">
+                <div className="contract-preview" style={{ borderColor: contractInfo.unverified ? 'var(--orange)' : 'var(--green)', background: contractInfo.unverified ? 'var(--orange-dim)' : 'var(--green-dim)' }}>
                   <span className="cp-icon">🔵</span>
                   <div>
-                    <span className="cp-name">{contractInfo.name}</span>
-                    <span className="cp-symbol"> ({contractInfo.symbol})</span>
-                    <span className="cp-dec"> · {contractInfo.decimals} decimals</span>
+                    {contractInfo.unverified ? (
+                      <>
+                        <span className="cp-name" style={{ color: 'var(--orange)' }}>Address format valid ✓</span>
+                        <span className="cp-dec"> — token name/symbol will load on-chain</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="cp-name">{contractInfo.name}</span>
+                        <span className="cp-symbol"> ({contractInfo.symbol})</span>
+                        <span className="cp-dec"> · {contractInfo.decimals} decimals</span>
+                      </>
+                    )}
                   </div>
-                  <a href={explorerAddress(contractAddr)} target="_blank" rel="noopener" className="cp-link">View ↗</a>
+                  <a href={`https://opscan.org/address/${contractAddr}?network=op_testnet`} target="_blank" rel="noopener" className="cp-link">opscan ↗</a>
                 </div>
               )}
               {!contractInfo && !contractErr && !validating && contractAddr && (
@@ -181,13 +190,19 @@ export function CreateListingPage({ wallet, onSubmit, onCancel, actionLoading })
                 {nftInfo && !nftValidating && <span className="inp-spinner" style={{ color: 'var(--green)' }}>✅</span>}
               </div>
               {nftInfo && (
-                <div className="contract-preview">
+                <div className="contract-preview" style={{ borderColor: nftInfo.unverified ? 'var(--orange)' : 'var(--green)', background: nftInfo.unverified ? 'var(--orange-dim)' : 'var(--green-dim)' }}>
                   <span className="cp-icon">🎨</span>
                   <div>
-                    <span className="cp-name">{nftInfo.name}</span>
-                    {nftInfo.symbol && <span className="cp-symbol"> ({nftInfo.symbol})</span>}
+                    {nftInfo.unverified ? (
+                      <span className="cp-name" style={{ color: 'var(--orange)' }}>Address format valid ✓</span>
+                    ) : (
+                      <>
+                        <span className="cp-name">{nftInfo.name}</span>
+                        {nftInfo.symbol && <span className="cp-symbol"> ({nftInfo.symbol})</span>}
+                      </>
+                    )}
                   </div>
-                  <a href={explorerAddress(nftContract)} target="_blank" rel="noopener" className="cp-link">View ↗</a>
+                  <a href={`https://opscan.org/address/${nftContract}?network=op_testnet`} target="_blank" rel="noopener" className="cp-link">opscan ↗</a>
                 </div>
               )}
             </FormField>
@@ -242,11 +257,13 @@ export function CreateListingPage({ wallet, onSubmit, onCancel, actionLoading })
       <div className="escrow-lock-notice">
         <div className="eln-icon">🔐</div>
         <div>
-          <div className="eln-title">Asset will be locked in escrow before listing goes live</div>
+          <div className="eln-title">How asset locking works</div>
           <div className="eln-steps">
-            <span>1. Approve token spend</span> → <span>2. Lock asset in OP_NET escrow</span> → <span>3. Listing becomes visible</span>
+            <span>1. Approve token spend</span> → <span>2. Lock asset in OP_NET escrow</span> → <span>3. Listing goes live</span>
           </div>
-          <div className="eln-sub">Listing only appears in market <strong>after</strong> successful on-chain lock confirmation. Asset returned automatically on cancel or timeout.</div>
+          <div className="eln-sub">
+            <strong>⚠️ Escrow contract status:</strong> The on-chain escrow contract is currently being written and will be deployed to OP_NET testnet. Once deployed, the full lock/buy/offer flow will work end-to-end. Listings created now are saved locally and will be linked to the contract on launch.
+          </div>
         </div>
       </div>
 
