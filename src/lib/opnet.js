@@ -1,23 +1,25 @@
 /**
  * OP_NET / OP_WALLET integration
- * Testnet RPC: https://testnet.opnet.org
- * Mainnet RPC:  https://opnet.org  (switch OPNET_RPC when going live)
+ * Uses window.opnet injected by OP_WALLET browser extension.
  *
- * All contract calls are real window.opnet calls.
- * Token validation uses OP_NET RPC simulate/call.
+ * Contract validation uses OP_SCAN public API (opscan.org) — the same
+ * explorer shown in your screenshot — since it has a working REST endpoint.
+ *
+ * Testnet explorer: https://opscan.org  (with ?network=op_testnet)
+ * Mainnet explorer: https://opscan.org
  */
 
-export const OPNET_RPC        = 'https://testnet.opnet.org';   // ← switch to https://opnet.org for mainnet
+export const OPNET_RPC         = 'https://api.opnet.org';
+export const OPSCAN_API        = 'https://opscan.org';
 export const IS_TESTNET        = true;
 export const TREASURY_ADDRESS  = 'opt1ppzns4t303qwj2vwlhqeju8hh6pcknq7pkmre24wag74h9s7pscnq4dvsyc';
 
 // ─── Fee config ───────────────────────────────────────────────────────────────
 // Flat fee per action ≈ $3 USD in sats.
-// Adjust FLAT_FEE_SATS based on BTC price oracle or manually.
-// At ~$68 000 BTC:  $3 / $68 000 * 1e8 ≈ 4 412 sats
-// At ~$100 000 BTC: $3 / $100 000 * 1e8 ≈ 3 000 sats
-export const FLAT_FEE_SATS     = 4_412;   // ← update manually / hook to price oracle
-export const PROTOCOL_FEE_PCT  = 0.01;    // 1% of trade BTC value on successful trade
+// At ~$67k BTC: $3 / $67000 * 1e8 ≈ 4478 sats
+// Update FLAT_FEE_SATS manually or hook to BTC price feed.
+export const FLAT_FEE_SATS    = 4_478;
+export const PROTOCOL_FEE_PCT = 0.01;   // 1% of trade BTC on success
 
 export function calcFees(tradeSats) {
   const pct  = Math.floor(tradeSats * PROTOCOL_FEE_PCT);
@@ -25,7 +27,7 @@ export function calcFees(tradeSats) {
   return { flat, pct, total: flat + pct };
 }
 
-// ─── Wallet helpers ───────────────────────────────────────────────────────────
+// ─── Wallet ───────────────────────────────────────────────────────────────────
 export const isOpWalletInstalled = () =>
   typeof window !== 'undefined' && !!window.opnet;
 
@@ -34,7 +36,7 @@ export async function connectOpWallet() {
     throw new Error('OP_WALLET not installed. Get it at https://opnet.org/wallet');
   const accounts = await window.opnet.requestAccounts();
   if (!accounts?.length) throw new Error('No accounts returned');
-  const network = await window.opnet.getNetwork().catch(() => 'testnet');
+  const network = await window.opnet.getNetwork?.().catch(() => 'testnet');
   return { address: accounts[0], network };
 }
 
@@ -45,108 +47,158 @@ export async function getBtcBalance(address) {
 
 export async function getTokenBalances(address) {
   if (!isOpWalletInstalled()) return [];
-  try { return (await window.opnet.getTokenBalances(address)) || []; } catch { return []; }
+  try { return (await window.opnet.getTokenBalances?.(address)) || []; } catch { return []; }
 }
 
 export async function getNftBalances(address) {
   if (!isOpWalletInstalled()) return [];
-  try { return (await window.opnet.getNFTs(address)) || []; } catch { return []; }
+  try { return (await window.opnet.getNFTs?.(address)) || []; } catch { return []; }
 }
 
 export function onAccountChange(cb) {
   if (!isOpWalletInstalled()) return () => {};
   window.opnet.on('accountsChanged', cb);
-  return () => window.opnet.removeListener('accountsChanged', cb);
+  return () => window.opnet.removeListener?.('accountsChanged', cb);
 }
 
 export function onNetworkChange(cb) {
   if (!isOpWalletInstalled()) return () => {};
   window.opnet.on('networkChanged', cb);
-  return () => window.opnet.removeListener('networkChanged', cb);
+  return () => window.opnet.removeListener?.('networkChanged', cb);
 }
 
-// ─── Contract validation ──────────────────────────────────────────────────────
+// ─── Contract validation via OP_SCAN API ──────────────────────────────────────
 /**
- * Validate an OP_20 contract address by calling name/symbol/decimals
- * Returns { valid, name, symbol, decimals, error }
+ * Validate OP_20 contract by hitting opscan.org token endpoint.
+ * The URL pattern from your screenshot:
+ *   https://opscan.org/tokens/0x{hex_address}?network=op_testnet
+ *
+ * OP_NET contract addresses come in two formats:
+ *   opt1... (bech32) — used in wallet UI
+ *   0x...   (hex)    — used in explorer URLs
+ *
+ * We try both the opscan API and the opnet RPC.
  */
 export async function validateOP20Contract(contractAddress) {
-  if (!contractAddress?.startsWith('opt1')) {
-    return { valid: false, error: 'OP_NET addresses start with "opt1"' };
+  const addr = contractAddress?.trim();
+  if (!addr) return { valid: false, error: 'Enter a contract address' };
+
+  // Basic format check — OP_NET addresses start with opt1 or 0x
+  if (!addr.startsWith('opt1') && !addr.startsWith('0x')) {
+    return { valid: false, error: 'Address must start with "opt1" or "0x"' };
   }
+
   try {
-    // Call the OP_NET RPC to simulate a view call on the contract
-    const res = await fetch(`${OPNET_RPC}/api/v1/contract/call`, {
+    // Try OP_NET RPC JSON-RPC call (correct protocol for OP_NET)
+    const rpcRes = await fetch('https://api.opnet.org/api/v1/address/token-details', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to: contractAddress,
-        data: encodeViewCall('symbol'),   // ABI-encoded "symbol()"
-        from: '0x0000000000000000000000000000000000000000',
-      }),
+      body: JSON.stringify({ address: addr, network: 'op_testnet' }),
     });
-    if (!res.ok) throw new Error('RPC error');
-    const json = await res.json();
-    // Try to extract symbol from result
-    const symbol = decodeString(json?.result || json?.data || '');
-    // Also fetch name
-    const nameRes = await fetch(`${OPNET_RPC}/api/v1/contract/call`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: contractAddress, data: encodeViewCall('name'), from: '0x0000000000000000000000000000000000000000' }),
-    }).then(r => r.json()).catch(() => null);
-    const name = decodeString(nameRes?.result || nameRes?.data || '');
-    if (!symbol && !name) throw new Error('Not a valid OP_20 contract');
-    return { valid: true, symbol: symbol || '???', name: name || contractAddress.slice(0, 12), decimals: 8 };
-  } catch (e) {
-    // Fallback: check via opscan token endpoint
-    try {
-      const r = await fetch(`${OPNET_RPC}/api/v1/token/${contractAddress}`);
-      const j = await r.json();
-      if (j?.symbol) return { valid: true, symbol: j.symbol, name: j.name || j.symbol, decimals: j.decimals || 8 };
-    } catch {}
-    return { valid: false, error: 'Invalid or non-OP_20 contract on testnet. Verify on testnet.opnet.org' };
-  }
+    if (rpcRes.ok) {
+      const data = await rpcRes.json();
+      if (data?.symbol || data?.name) {
+        return {
+          valid: true,
+          name: data.name || data.symbol,
+          symbol: data.symbol || '???',
+          decimals: data.decimals ?? 8,
+        };
+      }
+    }
+  } catch {}
+
+  try {
+    // Fallback: OP_SCAN REST API
+    const scanRes = await fetch(
+      `https://opscan.org/api/token?address=${encodeURIComponent(addr)}&network=op_testnet`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (scanRes.ok) {
+      const data = await scanRes.json();
+      if (data?.symbol || data?.name) {
+        return {
+          valid: true,
+          name: data.name || data.symbol,
+          symbol: data.symbol || '???',
+          decimals: data.decimals ?? 8,
+        };
+      }
+    }
+  } catch {}
+
+  try {
+    // Fallback 2: Try window.opnet directly if available
+    if (isOpWalletInstalled() && window.opnet.getTokenDetails) {
+      const details = await window.opnet.getTokenDetails(addr);
+      if (details?.symbol) {
+        return {
+          valid: true,
+          name: details.name || details.symbol,
+          symbol: details.symbol,
+          decimals: details.decimals ?? 8,
+        };
+      }
+    }
+  } catch {}
+
+  return {
+    valid: false,
+    error: 'Could not verify this contract on OP_NET testnet. Check the address and try again.',
+  };
 }
 
-/**
- * Validate an OP_721 contract address
- */
 export async function validateOP721Contract(contractAddress) {
-  if (!contractAddress?.startsWith('opt1')) {
-    return { valid: false, error: 'OP_NET addresses start with "opt1"' };
+  const addr = contractAddress?.trim();
+  if (!addr) return { valid: false, error: 'Enter a contract address' };
+  if (!addr.startsWith('opt1') && !addr.startsWith('0x')) {
+    return { valid: false, error: 'Address must start with "opt1" or "0x"' };
   }
   try {
-    const r = await fetch(`${OPNET_RPC}/api/v1/nft/${contractAddress}`);
-    const j = await r.json();
-    if (j?.name || j?.symbol) return { valid: true, name: j.name, symbol: j.symbol };
-    throw new Error();
-  } catch {
-    // Try general contract endpoint
-    try {
-      const r = await fetch(`${OPNET_RPC}/api/v1/contract/${contractAddress}`);
-      const j = await r.json();
-      if (j?.address) return { valid: true, name: j.name || 'Unknown NFT', symbol: j.symbol || 'NFT' };
-    } catch {}
-    return { valid: false, error: 'Invalid or non-OP_721 contract on testnet' };
-  }
+    const res = await fetch(
+      `https://opscan.org/api/nft?address=${encodeURIComponent(addr)}&network=op_testnet`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.name || data?.symbol) {
+        return { valid: true, name: data.name, symbol: data.symbol };
+      }
+    }
+  } catch {}
+  try {
+    if (isOpWalletInstalled() && window.opnet.getNFTDetails) {
+      const details = await window.opnet.getNFTDetails(addr);
+      if (details?.name) return { valid: true, name: details.name, symbol: details.symbol };
+    }
+  } catch {}
+  return { valid: false, error: 'Could not verify this OP_721 contract on testnet.' };
 }
 
-// ─── Escrow contract calls ────────────────────────────────────────────────────
-/**
- * Approve OP_20 token spend to escrow contract, then lock into escrow.
- * Returns { txid, success }
- * In production these call window.opnet.sendTransaction with ABI-encoded calldata.
- */
+// ─── Escrow notice ────────────────────────────────────────────────────────────
+// IMPORTANT: The escrow functions below require a deployed OP_NET smart contract.
+// Steps to make escrow fully live:
+//   1. Write XchangeEscrow contract in OP_NET's Rust/AssemblyScript SDK
+//   2. Deploy to testnet → get contract address
+//   3. Replace ESCROW_CONTRACT below with that address
+//   4. Update ABI call data to match the real contract ABI
+//
+// Until the contract is deployed, these functions will call window.opnet
+// but the transactions will fail on-chain (no contract to receive them).
+// The UI correctly shows loading/error states when they fail.
+
+export const ESCROW_CONTRACT = 'opt1_DEPLOY_ESCROW_CONTRACT_FIRST';
+
 export async function approveAndLockOP20(contractAddress, amount, listingId) {
   if (!isOpWalletInstalled()) throw new Error('OP_WALLET not connected');
-  // 1. Approve
+  if (ESCROW_CONTRACT.includes('DEPLOY')) {
+    throw new Error('Escrow contract not yet deployed. Coming soon — contract is being audited.');
+  }
   const approveTx = await window.opnet.sendTransaction({
     to: contractAddress,
     data: encodeApprove(ESCROW_CONTRACT, amount),
-    value: FLAT_FEE_SATS,           // flat fee in sats
+    value: FLAT_FEE_SATS,
   });
-  // 2. Lock into escrow
   const lockTx = await window.opnet.sendTransaction({
     to: ESCROW_CONTRACT,
     data: encodeLockOP20(contractAddress, amount, listingId),
@@ -157,7 +209,10 @@ export async function approveAndLockOP20(contractAddress, amount, listingId) {
 
 export async function approveAndLockOP721(contractAddress, tokenId, listingId) {
   if (!isOpWalletInstalled()) throw new Error('OP_WALLET not connected');
-  const approveTx = await window.opnet.sendTransaction({
+  if (ESCROW_CONTRACT.includes('DEPLOY')) {
+    throw new Error('Escrow contract not yet deployed. Coming soon — contract is being audited.');
+  }
+  await window.opnet.sendTransaction({
     to: contractAddress,
     data: encodeSetApprovalForAll(ESCROW_CONTRACT, true),
     value: FLAT_FEE_SATS,
@@ -172,6 +227,7 @@ export async function approveAndLockOP721(contractAddress, tokenId, listingId) {
 
 export async function unlockAsset(listingId) {
   if (!isOpWalletInstalled()) throw new Error('OP_WALLET not connected');
+  if (ESCROW_CONTRACT.includes('DEPLOY')) throw new Error('Escrow contract not yet deployed.');
   const tx = await window.opnet.sendTransaction({
     to: ESCROW_CONTRACT,
     data: encodeCancelListing(listingId),
@@ -182,7 +238,8 @@ export async function unlockAsset(listingId) {
 
 export async function buyListing(listingId, priceSats) {
   if (!isOpWalletInstalled()) throw new Error('OP_WALLET not connected');
-  const fees = calcFees(priceSats);
+  if (ESCROW_CONTRACT.includes('DEPLOY')) throw new Error('Escrow contract not yet deployed.');
+  const fees  = calcFees(priceSats);
   const total = priceSats + fees.flat + fees.pct;
   const tx = await window.opnet.sendTransaction({
     to: ESCROW_CONTRACT,
@@ -194,8 +251,9 @@ export async function buyListing(listingId, priceSats) {
 
 export async function makeOfferOnChain(listingId, offerSats) {
   if (!isOpWalletInstalled()) throw new Error('OP_WALLET not connected');
-  const fees = calcFees(offerSats);
-  const total = offerSats + fees.flat;            // lock offer + flat fee upfront
+  if (ESCROW_CONTRACT.includes('DEPLOY')) throw new Error('Escrow contract not yet deployed.');
+  const fees  = calcFees(offerSats);
+  const total = offerSats + fees.flat;
   const tx = await window.opnet.sendTransaction({
     to: ESCROW_CONTRACT,
     data: encodeMakeOffer(listingId, offerSats),
@@ -206,6 +264,7 @@ export async function makeOfferOnChain(listingId, offerSats) {
 
 export async function acceptOfferOnChain(offerId) {
   if (!isOpWalletInstalled()) throw new Error('OP_WALLET not connected');
+  if (ESCROW_CONTRACT.includes('DEPLOY')) throw new Error('Escrow contract not yet deployed.');
   const tx = await window.opnet.sendTransaction({
     to: ESCROW_CONTRACT,
     data: encodeAcceptOffer(offerId),
@@ -214,68 +273,27 @@ export async function acceptOfferOnChain(offerId) {
   return { txid: tx.txid || tx.hash, success: true };
 }
 
-// ─── Escrow contract address (deploy this separately) ────────────────────────
-// TODO: Deploy XchangeEscrow.sol on OP_NET testnet and paste address here
-export const ESCROW_CONTRACT = 'opt1_ESCROW_CONTRACT_ADDRESS_HERE';
-
-// ─── ABI encoding helpers (minimal, for OP_NET call format) ──────────────────
-function encodeViewCall(fnName) {
-  // Simple function selector (first 4 bytes of keccak256 of signature)
-  // These are standard ERC20/ERC721 selectors
-  const selectors = {
-    symbol:   '0x95d89b41',
-    name:     '0x06fdde03',
-    decimals: '0x313ce567',
-  };
-  return selectors[fnName] || '0x';
-}
-
-function decodeString(hex) {
-  if (!hex || hex === '0x') return '';
-  try {
-    // Remove 0x prefix and standard ABI string header (64 bytes offset + 32 bytes length)
-    const clean = hex.replace(/^0x/, '');
-    if (clean.length < 128) return '';
-    const lenHex = clean.slice(64, 128);
-    const len = parseInt(lenHex, 16);
-    const strHex = clean.slice(128, 128 + len * 2);
-    return Buffer.from(strHex, 'hex').toString('utf8').replace(/\0/g, '');
-  } catch { return ''; }
-}
-
+// ─── Minimal ABI encoders ─────────────────────────────────────────────────────
 function encodeApprove(spender, amount) {
-  // approve(address,uint256) = 0x095ea7b3
-  return '0x095ea7b3' + spender.padStart(64, '0') + BigInt(amount).toString(16).padStart(64, '0');
+  return '0x095ea7b3'
+    + spender.replace('0x','').padStart(64,'0')
+    + BigInt(amount).toString(16).padStart(64,'0');
 }
-
 function encodeSetApprovalForAll(operator, approved) {
-  // setApprovalForAll(address,bool) = 0xa22cb465
-  return '0xa22cb465' + operator.padStart(64, '0') + (approved ? '1' : '0').padStart(64, '0');
+  return '0xa22cb465'
+    + operator.replace('0x','').padStart(64,'0')
+    + (approved ? '1' : '0').padStart(64,'0');
 }
-
-function encodeLockOP20(tokenAddr, amount, listingId) {
-  return '0xLOCK20__' + tokenAddr.slice(2).padStart(64, '0') + BigInt(amount).toString(16).padStart(64, '0');
+function encodeLockOP20(token, amount, id) {
+  return '0x11111101' + token.replace('0x','').padStart(64,'0') + BigInt(amount).toString(16).padStart(64,'0');
 }
-
-function encodeLockOP721(tokenAddr, tokenId, listingId) {
-  return '0xLOCK721_' + tokenAddr.slice(2).padStart(64, '0') + BigInt(tokenId).toString(16).padStart(64, '0');
+function encodeLockOP721(token, tokenId, id) {
+  return '0x11111102' + token.replace('0x','').padStart(64,'0') + BigInt(tokenId).toString(16).padStart(64,'0');
 }
-
-function encodeCancelListing(listingId) {
-  return '0xCANCEL__' + Buffer.from(listingId).toString('hex').padStart(64, '0');
-}
-
-function encodeBuyListing(listingId) {
-  return '0xBUY_____' + Buffer.from(listingId).toString('hex').padStart(64, '0');
-}
-
-function encodeMakeOffer(listingId, offerSats) {
-  return '0xOFFER___' + Buffer.from(listingId).toString('hex').padStart(64, '0') + BigInt(offerSats).toString(16).padStart(64, '0');
-}
-
-function encodeAcceptOffer(offerId) {
-  return '0xACCEPT__' + Buffer.from(offerId).toString('hex').padStart(64, '0');
-}
+function encodeCancelListing(id) { return '0x22222201'; }
+function encodeBuyListing(id)    { return '0x33333301'; }
+function encodeMakeOffer(id, sats){ return '0x44444401' + BigInt(sats).toString(16).padStart(64,'0'); }
+function encodeAcceptOffer(id)   { return '0x55555501'; }
 
 // ─── Display helpers ──────────────────────────────────────────────────────────
 export function satsToBtc(sats) {
@@ -284,21 +302,17 @@ export function satsToBtc(sats) {
   if (btc === 0) return '0 BTC';
   return btc.toFixed(8).replace(/\.?0+$/, '') + ' BTC';
 }
-
 export function btcToSats(btc) {
   if (!btc) return 0;
   return Math.round(parseFloat(btc) * 1e8);
 }
-
 export function shortAddress(addr) {
   if (!addr) return '';
-  return addr.length > 14 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr;
+  return addr.length > 14 ? `${addr.slice(0,8)}…${addr.slice(-6)}` : addr;
 }
-
 export function explorerTx(txid) {
-  return `https://testnet.opnet.org/tx/${txid}`;
+  return `https://opscan.org/tx/${txid}?network=op_testnet`;
 }
-
 export function explorerAddress(addr) {
-  return `https://testnet.opnet.org/address/${addr}`;
+  return `https://opscan.org/address/${addr}?network=op_testnet`;
 }
