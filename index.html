@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>XCHANGE — OTC P2P on Bitcoin L1</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0C1120;--bg2:#1A1F2E;--bg3:#232A3E;--border:#2E3650;
+  --text:#F0F4FF;--muted:#8892B0;--orange:#FF6200;
+  --od:rgba(255,98,0,0.12);--green:#22C55E;--gd:rgba(34,197,94,0.12);
+  --red:#EF4444;--rd:rgba(239,68,68,0.12);--pd:rgba(167,139,250,0.12);
+  --shadow:0 4px 24px rgba(0,0,0,0.3);--radius:14px;
+  --font:'Syne',sans-serif;--mono:'JetBrains Mono',monospace;
+}
+html.light{--bg:#F5F7FF;--bg2:#fff;--bg3:#EEF1FA;--border:#D8DEF0;--text:#0C1120;--muted:#5A6580;--shadow:0 4px 24px rgba(0,0,0,0.08)}
+body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:100vh;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+@keyframes fi{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.fi{animation:fi 0.25s ease}
+.sp{width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0;display:inline-block}
+input,textarea,select{font-family:var(--font)}
+button{font-family:var(--font)}
+</style>
+</head>
+<body>
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#8892B0;font-family:sans-serif;gap:12px"><div style="width:20px;height:20px;border:2px solid #333;border-top-color:#FF6200;border-radius:50%;animation:spin .7s linear infinite"></div>Loading XCHANGE…</div></div>
+<script type="text/babel" data-presets="react">
+const {useState,useEffect,useCallback,useRef} = React;
+
+// ── CONSTANTS ──────────────────────────────────────────────────
+const TREASURY = 'opt1ppzns4t303qwj2vwlhqeju8hh6pcknq7pkmre24wag74h9s7pscnq4dvsyc';
+const FLAT_FEE = 4478;
+const KNOWN_TOKENS = [
+  {address:'opt1sqzkx6wm5acawl9m6nay2mjsm6wagv7gazcgtczds',name:'Motoswap',symbol:'MOTO',emoji:'🏍️',description:'Motoswap governance token'},
+  {address:'opt1p5kzh0gjfkpnp8gek7k6ttlmhz7p0qzh5ry3jkp',name:'Pills Token',symbol:'PILLS',emoji:'💊',description:'Pills token on OP_NET'},
+];
+
+// ── STORE ──────────────────────────────────────────────────────
+const LS = {L:'xc_l3',O:'xc_o3',T:'xc_t3'};
+const getL  = () => { try{return JSON.parse(localStorage.getItem(LS.L)||'[]')}catch{return[]} };
+const saveL = l => { const a=getL(); a.unshift(l); localStorage.setItem(LS.L,JSON.stringify(a)); };
+const updL  = (id,u) => { const a=getL(); const i=a.findIndex(x=>x.id===id); if(i<0)return; a[i]={...a[i],...u}; localStorage.setItem(LS.L,JSON.stringify(a)); };
+const getO  = () => { try{return JSON.parse(localStorage.getItem(LS.O)||'[]')}catch{return[]} };
+const saveO = o => { const a=getO(); a.unshift(o); localStorage.setItem(LS.O,JSON.stringify(a)); };
+const updO  = (id,u) => { const a=getO(); const i=a.findIndex(x=>x.id===id); if(i<0)return; a[i]={...a[i],...u}; localStorage.setItem(LS.O,JSON.stringify(a)); };
+const getT  = () => { try{return JSON.parse(localStorage.getItem(LS.T)||'[]')}catch{return[]} };
+const saveT = t => { const a=getT(); a.unshift(t); localStorage.setItem(LS.T,JSON.stringify(a)); };
+const genId = p => p+Date.now().toString(36).toUpperCase()+Math.random().toString(36).slice(2,5).toUpperCase();
+
+// ── CHAT ───────────────────────────────────────────────────────
+const roomKey  = (a,b,lid) => { const [x,y]=[a,b].sort(); return `xc_c_${x}_${y}_${lid}`; };
+const getMsgs  = (a,b,lid) => { try{return JSON.parse(localStorage.getItem(roomKey(a,b,lid))||'[]')}catch{return[]} };
+const sendMsg  = (a,b,lid,text) => { const k=roomKey(a,b,lid); const m=getMsgs(a,b,lid); m.push({id:Date.now()+'_'+Math.random().toString(36).slice(2),from:a,text,ts:Date.now()}); localStorage.setItem(k,JSON.stringify(m)); };
+const getMyChats = addr => {
+  const rooms=[];
+  for(let i=0;i<localStorage.length;i++){
+    const k=localStorage.key(i);
+    if(!k?.startsWith('xc_c_')||!k.includes(addr)) continue;
+    try{
+      const msgs=JSON.parse(localStorage.getItem(k)||'[]');
+      if(!msgs.length) continue;
+      const rest=k.slice(5).split('_');
+      const other=rest[0]===addr?rest[1]:rest[0];
+      const lid=rest.slice(2).join('_');
+      rooms.push({key:k,listingId:lid,otherAddr:other,msgs,lastMsg:msgs[msgs.length-1]});
+    }catch{}
+  }
+  return rooms.sort((a,b)=>b.lastMsg.ts-a.lastMsg.ts);
+};
+
+// ── HELPERS ────────────────────────────────────────────────────
+const s2b   = s => { if(!s&&s!==0)return'—'; const b=Number(s)/1e8; return b===0?'0 BTC':b.toFixed(8).replace(/\.?0+$/,'')+' BTC'; };
+const b2s   = b => { if(!b)return 0; return Math.round(parseFloat(b)*1e8); };
+const short = a => { if(!a)return''; return a.length>14?a.slice(0,8)+'…'+a.slice(-6):a; };
+const ago   = ts => { const d=(Date.now()-ts)/1000; if(d<60)return'just now'; if(d<3600)return Math.floor(d/60)+'m ago'; if(d<86400)return Math.floor(d/3600)+'h ago'; return Math.floor(d/86400)+'d ago'; };
+const expl  = a => `https://opscan.org/address/${a}?network=op_testnet`;
+const isValidAddr = a => { if(!a)return false; if(a.startsWith('opt1'))return a.length>=40&&a.length<=70&&/^opt1[ac-hj-np-z02-9]+$/i.test(a); if(a.startsWith('0x'))return a.length===42&&/^0x[0-9a-fA-F]{40}$/.test(a); return false; };
+
+// ── WALLET ─────────────────────────────────────────────────────
+const hasWallet = () => typeof window!=='undefined'&&!!window.opnet;
+
+async function connectWallet(){
+  if(!hasWallet()) throw new Error('OP_WALLET not installed — get it at opnet.org/wallet');
+  const accounts = await window.opnet.requestAccounts();
+  if(!accounts?.length) throw new Error('No accounts returned');
+  const network = await window.opnet.getNetwork?.().catch(()=>'testnet');
+  return {address:accounts[0],network};
+}
+
+async function payFee(action){
+  if(!hasWallet()) throw new Error('OP_WALLET not connected');
+  const fns = [
+    ()=>window.opnet.sendBitcoin({to:TREASURY,amount:FLAT_FEE}),
+    ()=>window.opnet.sendBitcoin(TREASURY,FLAT_FEE),
+    ()=>window.opnet.send({to:TREASURY,value:FLAT_FEE}),
+    ()=>window.opnet.sendTransaction({to:TREASURY,value:FLAT_FEE}),
+    ()=>window.opnet.transfer({to:TREASURY,amount:FLAT_FEE}),
+  ];
+  let last;
+  for(const fn of fns){
+    try{
+      const tx=await fn();
+      const txid=tx?.txid||tx?.hash||tx?.id||tx;
+      if(txid) return {txid:String(txid),success:true};
+    }catch(e){
+      last=e;
+      if(e.message?.toLowerCase().match(/reject|denied|cancel/)) throw new Error('Fee payment cancelled.');
+    }
+  }
+  console.warn('Fee tx unavailable:',last?.message);
+  return {txid:null,success:false};
+}
+
+async function validateToken(addr){
+  const a=addr?.trim();
+  if(!a) return {valid:false,error:'Enter a contract address'};
+  const known=KNOWN_TOKENS.find(t=>t.address.toLowerCase()===a.toLowerCase());
+  if(known) return {valid:true,...known};
+  if(!isValidAddr(a)) return {valid:false,error:'Invalid — must start with "opt1" (40+ chars) or "0x" (42 chars)'};
+  return {valid:true,name:null,symbol:null,unverified:true};
+}
+
+// ── TOAST HOOK ─────────────────────────────────────────────────
+function useToast(){
+  const [toasts,setToasts]=useState([]);
+  const add=useCallback((msg,type='success')=>{
+    const id=Date.now();
+    setToasts(t=>[...t,{id,msg,type}]);
+    setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)),4000);
+  },[]);
+  return {toasts,add};
+}
+
+// ── LISTINGS HOOK ──────────────────────────────────────────────
+function useListings(wallet){
+  const [listings, setListings] = useState([]);
+  const [offers,   setOffers]   = useState([]);
+  const [txs,      setTxs]      = useState([]);
+  const [ld,       setLd]       = useState('');
+
+  const refresh = useCallback(()=>{ setListings(getL()); setOffers(getO()); setTxs(getT()); },[]);
+  useEffect(()=>{ refresh(); },[refresh]);
+
+  const createListing = useCallback(async(data)=>{
+    setLd('creating');
+    try{
+      await payFee('listing');
+      const id=genId('L');
+      saveL({...data,id,seller:wallet?.address,status:'active',posted:Date.now()});
+      saveT({id:genId('TX'),listingId:id,type:'listing_fee',actor:wallet?.address,fee:FLAT_FEE,date:Date.now()});
+      refresh(); return {success:true};
+    }finally{setLd('');}
+  },[wallet,refresh]);
+
+  const cancelListing = useCallback((id)=>{ updL(id,{status:'cancelled'}); refresh(); },[refresh]);
+
+  const buyListing = useCallback(async(listing)=>{
+    setLd('buy_'+listing.id);
+    try{
+      await payFee('buy');
+      updL(listing.id,{status:'pending_transfer',buyerAddress:wallet?.address,buyerAt:Date.now()});
+      saveT({id:genId('TX'),listingId:listing.id,type:'buy_fee',buyer:wallet?.address,seller:listing.seller,fee:FLAT_FEE,date:Date.now()});
+      refresh(); return {success:true,chatWith:listing.seller};
+    }finally{setLd('');}
+  },[wallet,refresh]);
+
+  const makeOffer = useCallback(async(lid,lname,seller,btcAmt)=>{
+    setLd('offer_'+lid);
+    try{
+      await payFee('offer');
+      const id=genId('O');
+      saveO({id,listingId:lid,listingName:lname,from:wallet?.address,sellerAddress:seller,amount:b2s(btcAmt),amountDisplay:btcAmt,status:'pending',date:Date.now()});
+      saveT({id:genId('TX'),offerId:id,listingId:lid,type:'offer_fee',actor:wallet?.address,fee:FLAT_FEE,date:Date.now()});
+      refresh(); return {success:true};
+    }finally{setLd('');}
+  },[wallet,refresh]);
+
+  const acceptOffer = useCallback(async(oid)=>{
+    setLd('accept_'+oid);
+    try{
+      const offer=getO().find(o=>o.id===oid);
+      updO(oid,{status:'accepted',acceptedAt:Date.now()});
+      if(offer) updL(offer.listingId,{status:'pending_transfer',buyerAddress:offer.from});
+      refresh(); return {success:true,chatWith:offer?.from,listingId:offer?.listingId};
+    }finally{setLd('');}
+  },[refresh]);
+
+  const rejectOffer  = useCallback((id)=>{ updO(id,{status:'rejected'}); refresh(); },[refresh]);
+  const markComplete = useCallback((id)=>{ updL(id,{status:'sold',soldAt:Date.now()}); refresh(); },[refresh]);
+
+  const addr=wallet?.address;
+  const activeListings = listings.filter(l=>l.status==='active'||l.status==='pending_transfer');
+  const myListings     = listings.filter(l=>l.seller===addr);
+  const myOffers       = offers.filter(o=>o.from===addr);
+  const receivedOffers = offers.filter(o=>{ const l=listings.find(x=>x.id===o.listingId); return l?.seller===addr&&o.status==='pending'; });
+
+  return {listings,activeListings,myListings,myOffers,receivedOffers,offers,txs,ld,createListing,cancelListing,buyListing,makeOffer,acceptOffer,rejectOffer,markComplete,refresh};
+}
+
+// ── SHARED STYLES ──────────────────────────────────────────────
+const btn = (bg,extra={}) => ({display:'inline-flex',alignItems:'center',gap:6,padding:'9px 16px',borderRadius:10,border:'none',cursor:'pointer',fontWeight:700,fontSize:13,transition:'all 0.15s',background:bg,color:'#fff',...extra});
+const inp = (err) => ({width:'100%',padding:'10px 14px',borderRadius:10,background:'var(--bg3)',border:`1.5px solid ${err?'var(--red)':'var(--border)'}`,color:'var(--text)',fontSize:13,outline:'none',boxSizing:'border-box'});
+const card = (extra={}) => ({background:'var(--bg2)',border:'1.5px solid var(--border)',borderRadius:'var(--radius)',padding:20,...extra});
+const Badge = ({status}) => {
+  const map={active:['var(--gd)','var(--green)'],sold:['var(--od)','var(--orange)'],pending:['var(--pd)','#a78bfa'],pending_transfer:['var(--od)','var(--orange)'],accepted:['var(--gd)','var(--green)'],rejected:['var(--rd)','var(--red)'],cancelled:['var(--rd)','var(--red)']};
+  const [bg,color]=map[status]||['var(--bg3)','var(--muted)'];
+  return <span style={{padding:'3px 10px',borderRadius:99,fontSize:11,fontWeight:800,fontFamily:'var(--mono)',background:bg,color,whiteSpace:'nowrap'}}>{status}</span>;
+};
+
+// ── PRIVATE CHAT ───────────────────────────────────────────────
+function PrivateChat({myAddr,otherAddr,listingId,listingName,isSeller,onClose,onMarkComplete}){
+  const [messages,setMessages]=useState([]);
+  const [input,setInput]=useState('');
+  const bottomRef=useRef(null);
+  const pollRef=useRef(null);
+
+  const load=useCallback(()=>setMessages(getMsgs(myAddr,otherAddr,listingId)),[myAddr,otherAddr,listingId]);
+  useEffect(()=>{ load(); pollRef.current=setInterval(load,1500); return()=>clearInterval(pollRef.current); },[load]);
+  useEffect(()=>bottomRef.current?.scrollIntoView({behavior:'smooth'}),[messages]);
+
+  const send=()=>{ if(!input.trim())return; sendMsg(myAddr,otherAddr,listingId,input.trim()); setInput(''); load(); };
+  const fmt=ts=>new Date(ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  const QUICK=['My address: '+myAddr,'Send tokens first, I\'ll send BTC after ✅','Send BTC first, I\'ll send tokens after ✅','Transfer confirmed! 🎉','Can we negotiate?'];
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.78)',zIndex:600,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div style={{background:'var(--bg2)',border:'1.5px solid var(--border)',borderRadius:16,width:'100%',maxWidth:500,maxHeight:'90vh',display:'flex',flexDirection:'column',boxShadow:'0 24px 64px rgba(0,0,0,.7)'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'14px 18px',borderBottom:'1px solid var(--border)',background:'var(--bg3)',borderRadius:'16px 16px 0 0'}}>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            <span style={{fontSize:22}}>🔒</span>
+            <div>
+              <div style={{fontWeight:800,fontSize:14}}>Private OTC Chat</div>
+              <div style={{fontSize:11,color:'var(--muted)',fontFamily:'var(--mono)'}}>{listingName} · {short(otherAddr)}</div>
+            </div>
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            {isSeller&&onMarkComplete&&<button onClick={onMarkComplete} style={btn('var(--green)',{fontSize:12,padding:'6px 12px',borderRadius:8})}>✅ Mark Complete</button>}
+            <button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',color:'var(--muted)',fontSize:20,padding:'2px 8px'}}>✕</button>
+          </div>
+        </div>
+        <div style={{padding:'10px 16px',background:'rgba(239,68,68,0.08)',borderBottom:'1px solid rgba(239,68,68,0.2)',fontSize:11,color:'var(--red)',lineHeight:1.6}}>
+          ⚠️ No escrow. Transfer directly wallet-to-wallet. XCHANGE does not hold funds.
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:16,display:'flex',flexDirection:'column',gap:10,minHeight:180,maxHeight:300}}>
+          {messages.length===0&&<div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',color:'var(--muted)',gap:8,padding:32,textAlign:'center'}}>
+            <span style={{fontSize:36}}>💬</span>
+            <div style={{fontWeight:700}}>Start the conversation</div>
+            <div style={{fontSize:12,maxWidth:260,lineHeight:1.6}}>Share your wallet address and agree on who sends first.</div>
+          </div>}
+          {messages.map(m=>{
+            const mine=m.from===myAddr;
+            return <div key={m.id} style={{display:'flex',flexDirection:'column',maxWidth:'80%',alignSelf:mine?'flex-end':'flex-start',alignItems:mine?'flex-end':'flex-start'}}>
+              <div style={{padding:'10px 14px',borderRadius:mine?'14px 14px 4px 14px':'14px 14px 14px 4px',background:mine?'var(--orange)':'var(--bg3)',border:mine?'none':'1px solid var(--border)',color:mine?'#fff':'var(--text)',fontSize:13,lineHeight:1.5,wordBreak:'break-word',whiteSpace:'pre-wrap'}}>{m.text}</div>
+              <div style={{fontSize:10,color:'var(--muted)',marginTop:3,fontFamily:'var(--mono)'}}>{mine?'You':short(m.from)} · {fmt(m.ts)}</div>
+            </div>;
+          })}
+          <div ref={bottomRef}/>
+        </div>
+        <div style={{padding:'8px 12px',borderTop:'1px solid var(--border)',display:'flex',gap:6,flexWrap:'wrap',background:'var(--bg3)'}}>
+          {QUICK.map(q=><button key={q} onClick={()=>setInput(q)} style={{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:99,padding:'3px 10px',fontSize:11,cursor:'pointer',color:'var(--muted)'}}>{q.length>38?q.slice(0,38)+'…':q}</button>)}
+        </div>
+        <div style={{display:'flex',gap:10,padding:'12px 14px',borderTop:'1px solid var(--border)',alignItems:'flex-end'}}>
+          <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}} placeholder="Type a message… (Enter to send)" rows={2}
+            style={{flex:1,background:'var(--bg3)',border:'1.5px solid var(--border)',borderRadius:10,color:'var(--text)',fontSize:13,padding:'10px 12px',outline:'none',resize:'none'}}/>
+          <button onClick={send} disabled={!input.trim()} style={btn('var(--orange)',{opacity:!input.trim()?.45:1})}>Send</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── WALLET BUTTON ──────────────────────────────────────────────
+function WalletButton({wallet,connecting,installed,onConnect,onDisconnect}){
+  const [open,setOpen]=useState(false);
+  const ref=useRef(null);
+  useEffect(()=>{
+    const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};
+    document.addEventListener('mousedown',h); return()=>document.removeEventListener('mousedown',h);
+  },[]);
+
+  if(!installed) return <a href="https://opnet.org/wallet" target="_blank" rel="noopener" style={{...btn('var(--orange)'),textDecoration:'none',borderRadius:10,fontSize:13}}>Install OP_WALLET</a>;
+  if(!wallet) return <button onClick={onConnect} disabled={connecting} style={btn('var(--orange)',{opacity:connecting?.7:1})}>{connecting?<><span className="sp"/>Connecting…</>:'Connect OP_WALLET'}</button>;
+
+  return <div ref={ref} style={{position:'relative'}}>
+    <button onClick={()=>setOpen(o=>!o)} style={{background:'var(--bg3)',color:'var(--text)',border:'1.5px solid var(--border)',borderRadius:10,padding:'7px 14px',fontWeight:700,cursor:'pointer',fontSize:13,display:'flex',alignItems:'center',gap:8}}>
+      <span style={{width:8,height:8,borderRadius:'50%',background:'var(--green)',display:'inline-block'}}/>
+      {short(wallet.address)}
+    </button>
+    {open&&<div style={{position:'absolute',top:'calc(100% + 8px)',right:0,background:'var(--bg2)',border:'1.5px solid var(--border)',borderRadius:'var(--radius)',padding:16,width:260,boxShadow:'var(--shadow)',zIndex:200}}>
+      <div style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--muted)',wordBreak:'break-all',marginBottom:6}}>{wallet.address}</div>
+      <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--muted)',marginBottom:10}}>
+        <span style={{width:8,height:8,borderRadius:'50%',background:'var(--green)',display:'inline-block'}}/>{wallet.network||'testnet'}
+      </div>
+      <a href={expl(wallet.address)} target="_blank" rel="noopener" style={{display:'block',fontSize:12,color:'var(--orange)',marginBottom:12,textDecoration:'none'}}>View on opscan ↗</a>
+      <button onClick={()=>{onDisconnect();setOpen(false);}} style={{width:'100%',background:'var(--rd)',color:'var(--red)',border:'1px solid var(--red)',borderRadius:8,padding:8,fontWeight:700,cursor:'pointer',fontSize:13}}>Disconnect</button>
+    </div>}
+  </div>;
+}
+
+// ── MARKET PAGE ────────────────────────────────────────────────
+function MarketPage({listings,offers,onSelect,onCreateListing,wallet}){
+  const [search,setSearch]=useState('');
+  const [filter,setFilter]=useState('all');
+  const filtered=listings.filter(l=>{
+    const s=search.toLowerCase();
+    const match=!s||(l.name||'').toLowerCase().includes(s)||(l.symbol||'').toLowerCase().includes(s);
+    return match&&(filter==='all'||l.type===filter);
+  });
+
+  return <div className="fi">
+    <div style={{background:'linear-gradient(135deg,var(--bg2),var(--bg3))',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'40px 24px',marginBottom:24,textAlign:'center'}}>
+      <div style={{fontSize:38,marginBottom:8}}>₿</div>
+      <h1 style={{fontSize:'clamp(26px,5vw,44px)',fontWeight:800,lineHeight:1,marginBottom:8}}>X<span style={{color:'var(--orange)'}}>CHANGE</span></h1>
+      <div style={{fontSize:11,color:'var(--muted)',fontFamily:'var(--mono)',marginBottom:14}}>OTC P2P · Bitcoin L1 · 🧪 Testnet</div>
+      <p style={{fontSize:14,color:'var(--muted)',lineHeight:1.7,maxWidth:500,margin:'0 auto 20px'}}>Trade OP_20 tokens & OP_721 NFTs directly against BTC. Private chat between buyer & seller. No middlemen.</p>
+      <div style={{display:'flex',gap:8,justifyContent:'center',flexWrap:'wrap'}}>
+        {[['✅ Live','green'],['💬 Manual OTC','orange'],['🧪 Testnet','orange'],['⚡ Escrow Soon','red']].map(([t,c])=>
+          <span key={t} style={{background:`var(--${c==='green'?'gd':c==='orange'?'od':'rd'})`,border:`1px solid var(--${c})`,color:`var(--${c})`,padding:'4px 14px',borderRadius:99,fontSize:11,fontFamily:'var(--mono)'}}>{t}</span>
+        )}
+      </div>
+    </div>
+    <div style={{display:'flex',gap:10,marginBottom:20,flexWrap:'wrap',alignItems:'center'}}>
+      <div style={{flex:1,minWidth:200,position:'relative'}}>
+        <span style={{position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',color:'var(--muted)'}}>🔍</span>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search tokens, NFTs…" style={{...inp(false),paddingLeft:36}}/>
+      </div>
+      <select value={filter} onChange={e=>setFilter(e.target.value)} style={{padding:'10px 14px',borderRadius:10,background:'var(--bg2)',border:'1.5px solid var(--border)',color:'var(--text)',fontSize:13,cursor:'pointer',outline:'none'}}>
+        <option value="all">All Assets</option>
+        <option value="OP_20">OP_20 Tokens</option>
+        <option value="OP_721">OP_721 NFTs</option>
+      </select>
+      {wallet&&<button onClick={onCreateListing} style={btn('var(--orange)')}>➕ Create Listing</button>}
+    </div>
+    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+      <h2 style={{fontSize:18,fontWeight:700}}>Active Listings</h2>
+      <span style={{background:'var(--od)',color:'var(--orange)',padding:'3px 12px',borderRadius:99,fontSize:12,fontFamily:'var(--mono)'}}>{filtered.length}</span>
+    </div>
+    {filtered.length===0
+      ? <div style={{textAlign:'center',padding:'60px 20px',color:'var(--muted)'}}>
+          <div style={{fontSize:48,marginBottom:12}}>📭</div>
+          <div style={{fontSize:18,fontWeight:700,marginBottom:8}}>No listings yet</div>
+          <div style={{fontSize:14,marginBottom:20}}>Be the first to list an asset</div>
+          {wallet&&<button onClick={onCreateListing} style={btn('var(--orange)',{padding:'12px 24px',fontSize:14})}>➕ Create First Listing</button>}
+        </div>
+      : <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:16}}>
+          {filtered.map(l=><ListingCard key={l.id} listing={l} offers={offers} onClick={()=>onSelect(l)}/>)}
+        </div>
+    }
+  </div>;
+}
+
+function ListingCard({listing:l,offers,onClick}){
+  const oc=offers.filter(o=>o.listingId===l.id&&o.status==='pending').length;
+  return <div onClick={onClick}
+    style={{...card({padding:20,cursor:'pointer',transition:'all 0.18s',boxShadow:'var(--shadow)'}),display:'block'}}
+    onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--orange)';e.currentTarget.style.transform='translateY(-2px)';}}
+    onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.transform='translateY(0)';}}>
+    <div style={{fontSize:48,textAlign:'center',marginBottom:14,lineHeight:1}}>{l.image||(l.type==='OP_721'?'🎨':'🔵')}</div>
+    <div style={{display:'flex',gap:6,marginBottom:10,flexWrap:'wrap'}}>
+      <span style={{background:l.type==='OP_721'?'var(--pd)':'var(--od)',color:l.type==='OP_721'?'#a78bfa':'var(--orange)',padding:'2px 8px',borderRadius:6,fontSize:10,fontWeight:800,fontFamily:'var(--mono)'}}>{l.type}</span>
+      {l.status==='pending_transfer'&&<span style={{background:'var(--od)',color:'var(--orange)',padding:'2px 8px',borderRadius:6,fontSize:10,fontWeight:800,fontFamily:'var(--mono)'}}>💬 IN CHAT</span>}
+      {l.status==='sold'&&<span style={{background:'#333',color:'#aaa',padding:'2px 8px',borderRadius:6,fontSize:10,fontWeight:800,fontFamily:'var(--mono)'}}>SOLD</span>}
+    </div>
+    <div style={{fontSize:17,fontWeight:700,marginBottom:3}}>{l.type==='OP_20'?`${l.amount} ${l.symbol||''}`:l.name}</div>
+    {l.priceMode==='fixed'
+      ? <div style={{fontSize:16,fontWeight:700,fontFamily:'var(--mono)',color:'var(--green)',marginBottom:6}}>{s2b(l.price)}</div>
+      : <div style={{fontSize:14,color:'var(--orange)',fontWeight:700,marginBottom:6}}>🤝 Accepting Offers</div>}
+    {oc>0&&<div style={{fontSize:11,color:'var(--muted)',marginBottom:6}}>{oc} pending offer{oc>1?'s':''}</div>}
+    {l.desc&&<div style={{fontSize:12,color:'var(--muted)',lineHeight:1.5,marginBottom:10,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}}>{l.desc}</div>}
+    <div style={{display:'flex',justifyContent:'space-between',paddingTop:12,borderTop:'1px solid var(--border)',fontSize:11,color:'var(--muted)'}}>
+      <span style={{fontFamily:'var(--mono)'}}>{short(l.seller)}</span>
+      <span>{ago(l.posted)}</span>
+    </div>
+  </div>;
+}
+
+// ── LISTING DETAIL ─────────────────────────────────────────────
+function ListingDetailPage({listing:l,offers,onBack,onBuy,onOffer,onAcceptOffer,onMarkComplete,wallet,ld}){
+  const [offerBtc,setOfferBtc]=useState('');
+  const [showBuy,setShowBuy]=useState(false);
+  const [showOffer,setShowOffer]=useState(false);
+  const [buyAgreed,setBuyAgreed]=useState(false);
+  const [offAgreed,setOffAgreed]=useState(false);
+  const [chat,setChat]=useState(null);
+
+  const isNFT=l.type==='OP_721';
+  const isMine=wallet?.address===l.seller;
+  const isBuying=ld==='buy_'+l.id;
+  const isOffering=ld?.startsWith('offer_');
+  const label=isNFT?l.name:`${l.amount||''} ${l.symbol||''}`.trim();
+  const allOffers=offers.filter(o=>o.listingId===l.id);
+
+  const openChat=other=>wallet&&setChat({myAddr:wallet.address,otherAddr:other});
+
+  const handleBuy=async()=>{
+    if(!buyAgreed)return; setShowBuy(false);
+    const r=await onBuy(l); if(r?.chatWith)openChat(r.chatWith);
+  };
+  const handleOffer=async()=>{
+    if(!offAgreed||!offerBtc||parseFloat(offerBtc)<=0)return; setShowOffer(false);
+    await onOffer(l.id,label,l.seller,offerBtc); setOfferBtc('');
+  };
+  const handleAccept=async(oid,buyerAddr)=>{
+    const r=await onAcceptOffer(oid); if(r?.success)openChat(buyerAddr);
+  };
+
+  const scol={active:'var(--green)',pending_transfer:'var(--orange)',sold:'var(--muted)',cancelled:'var(--red)'}[l.status]||'var(--muted)';
+  const stxt={active:'✅ Active — Accepting buyers',pending_transfer:'💬 Transfer in progress via private chat',sold:'🏁 Sold — Completed',cancelled:'✕ Cancelled'}[l.status]||l.status;
+
+  const Overlay=({children})=><div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.65)',zIndex:400,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>{children}</div>;
+  const ModalBox=({title,onClose,children})=><div style={{background:'var(--bg2)',border:'1.5px solid var(--border)',borderRadius:'var(--radius)',padding:24,maxWidth:440,width:'100%',boxShadow:'0 24px 64px rgba(0,0,0,.5)',maxHeight:'90vh',overflowY:'auto'}}>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
+      <h3 style={{fontSize:18,fontWeight:800}}>{title}</h3>
+      <button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',color:'var(--muted)',fontSize:18}}>✕</button>
+    </div>
+    {children}
+  </div>;
+
+  return <div className="fi">
+    <button onClick={onBack} style={{background:'none',border:'none',cursor:'pointer',color:'var(--muted)',fontSize:13,padding:0,marginBottom:20,display:'block'}}>← Back to Market</button>
+    <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderRadius:10,marginBottom:16,fontSize:13,fontWeight:700,background:scol+'15',border:`1.5px solid ${scol}`,color:scol}}>{stxt}</div>
+    <div style={{display:'flex',gap:10,alignItems:'center',background:'rgba(255,98,0,0.06)',border:'1.5px solid var(--orange)',borderRadius:10,padding:'10px 16px',marginBottom:20,fontSize:12}}>
+      💬 Manual OTC: No escrow. Buyer & seller arrange transfer via private chat after match.
+    </div>
+
+    <div style={{display:'grid',gridTemplateColumns:'1fr',gap:20}}>
+      <div style={card({textAlign:'center'})}>
+        <div style={{fontSize:88,lineHeight:1,marginBottom:14}}>{l.image||(isNFT?'🎨':'🔵')}</div>
+        <div style={{fontSize:22,fontWeight:800,marginBottom:4}}>{label}</div>
+        {l.collection&&<div style={{fontSize:13,color:'var(--muted)',marginBottom:8}}>{l.collection}</div>}
+        {l.contractAddress&&<a href={expl(l.contractAddress)} target="_blank" rel="noopener" style={{display:'block',marginTop:8,fontFamily:'var(--mono)',fontSize:11,color:'var(--orange)'}}>{short(l.contractAddress)} ↗</a>}
+        {l.desc&&<div style={{fontSize:13,color:'var(--muted)',lineHeight:1.7,marginTop:14,textAlign:'left'}}>{l.desc}</div>}
+      </div>
+
+      <div style={{display:'flex',flexDirection:'column',gap:14}}>
+        <div style={card()}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>Listing Details</div>
+          {[['Seller',<a href={expl(l.seller)} target="_blank" rel="noopener" style={{color:'var(--orange)',fontFamily:'var(--mono)',fontSize:11}}>{short(l.seller)}</a>],
+            ['Posted',ago(l.posted)],
+            !isNFT&&['Amount',`${l.amount} ${l.symbol||''}`],
+            isNFT&&['Token ID',`#${l.nftId}`],
+            ['Settlement','💬 Private chat (manual OTC)'],
+            l.priceMode==='fixed'&&['Price',<span style={{color:'var(--green)',fontFamily:'var(--mono)',fontSize:16,fontWeight:800}}>{s2b(l.price)}</span>],
+          ].filter(Boolean).map(([k,v])=>
+            <div key={k} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 0',borderBottom:'1px solid var(--border)',fontSize:13}}>
+              <span style={{color:'var(--muted)'}}>{k}</span><span style={{fontWeight:600}}>{v}</span>
+            </div>
+          )}
+        </div>
+
+        {!isMine&&l.status==='active'&&<div style={card()}>
+          {l.priceMode==='fixed'?<>
+            <div style={{fontSize:12,color:'var(--muted)',marginBottom:4}}>Price</div>
+            <div style={{fontSize:28,fontWeight:800,color:'var(--green)',fontFamily:'var(--mono)',marginBottom:10}}>{s2b(l.price)}</div>
+            <div style={{background:'var(--bg3)',borderRadius:10,padding:'10px 14px',marginBottom:12,fontSize:12}}>
+              <div style={{display:'flex',justifyContent:'space-between',color:'var(--muted)',padding:'3px 0',borderBottom:'1px solid var(--border)'}}>
+                <span>$3 fee to treasury (wallet popup)</span><span style={{fontFamily:'var(--mono)'}}>{s2b(FLAT_FEE)}</span>
+              </div>
+              <div style={{fontSize:11,color:'var(--muted)',paddingTop:6}}>Asset price paid to seller directly in chat</div>
+            </div>
+            {wallet
+              ?<button onClick={()=>setShowBuy(true)} disabled={isBuying} style={btn('var(--green)',{width:'100%',justifyContent:'center',opacity:isBuying?.5:1})}>{isBuying?<><span className="sp"/>Processing…</>:'⚡ Buy Now — Open Chat'}</button>
+              :<div style={{background:'var(--bg3)',border:'1.5px dashed var(--border)',borderRadius:10,padding:14,textAlign:'center',color:'var(--muted)',fontSize:13,marginTop:8}}>Connect OP_WALLET to buy</div>}
+          </>:<>
+            <div style={{fontSize:12,color:'var(--muted)',marginBottom:12,lineHeight:1.7}}>Seller is accepting offers. After acceptance, a private chat opens to arrange transfer.</div>
+            {wallet
+              ?<button onClick={()=>setShowOffer(true)} disabled={isOffering} style={btn('var(--orange)',{width:'100%',justifyContent:'center'})}>{isOffering?<><span className="sp"/>Sending…</>:'🤝 Make Offer'}</button>
+              :<div style={{background:'var(--bg3)',border:'1.5px dashed var(--border)',borderRadius:10,padding:14,textAlign:'center',color:'var(--muted)',fontSize:13}}>Connect OP_WALLET to make offers</div>}
+          </>}
+        </div>}
+
+        {isMine&&l.status==='pending_transfer'&&l.buyerAddress&&<div style={{...card(),border:'1.5px solid var(--orange)'}}>
+          <div style={{fontWeight:800,color:'var(--orange)',marginBottom:8}}>🤝 Buyer Found!</div>
+          <div style={{fontSize:13,color:'var(--muted)',marginBottom:14,lineHeight:1.6}}>Buyer: <code style={{color:'var(--orange)',fontSize:11}}>{short(l.buyerAddress)}</code><br/>Open chat to coordinate the transfer.</div>
+          <button onClick={()=>openChat(l.buyerAddress)} style={btn('var(--orange)',{width:'100%',justifyContent:'center',marginBottom:8})}>💬 Open Private Chat</button>
+          <button onClick={()=>onMarkComplete(l.id)} style={btn('var(--green)',{width:'100%',justifyContent:'center'})}>✅ Mark Transfer Complete</button>
+        </div>}
+
+        {allOffers.length>0&&<div style={card()}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:14,color:'var(--orange)'}}>🤝 Offers ({allOffers.length})</div>
+          {allOffers.map(o=><div key={o.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 0',borderBottom:'1px solid var(--border)'}}>
+            <div>
+              <div style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--muted)'}}>{short(o.from)}</div>
+              <div style={{fontSize:15,fontWeight:800,color:'var(--orange)',fontFamily:'var(--mono)'}}>{s2b(o.amount)}</div>
+              <div style={{fontSize:11,color:'var(--muted)'}}>{ago(o.date)}</div>
+            </div>
+            <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6}}>
+              <Badge status={o.status}/>
+              {isMine&&o.status==='pending'&&<button onClick={()=>handleAccept(o.id,o.from)} style={btn('var(--green)',{fontSize:11,padding:'5px 10px',borderRadius:8})}>✅ Accept & Chat</button>}
+              {!isMine&&o.from===wallet?.address&&o.status==='accepted'&&<button onClick={()=>openChat(l.seller)} style={btn('var(--orange)',{fontSize:11,padding:'5px 10px',borderRadius:8})}>💬 Open Chat</button>}
+              {isMine&&o.status==='accepted'&&<button onClick={()=>openChat(o.from)} style={btn('var(--orange)',{fontSize:11,padding:'5px 10px',borderRadius:8})}>💬 Chat</button>}
+            </div>
+          </div>)}
+        </div>}
+
+        <div style={card()}>
+          <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>💬 How This Works</div>
+          <div style={{fontSize:12,color:'var(--muted)',lineHeight:2.2}}>
+            1. Seller lists → pays $3 fee to treasury<br/>
+            2. Buyer buys/offers → pays $3 fee to treasury<br/>
+            3. Private chat opens between both parties<br/>
+            4. Agree on who sends first<br/>
+            5. Transfer directly wallet-to-wallet<br/>
+            6. Seller marks complete → listing shows SOLD<br/>
+            <span style={{color:'var(--orange)',fontWeight:700}}>⚡ On-chain escrow coming soon</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {showBuy&&<Overlay><ModalBox title="Confirm Purchase" onClose={()=>setShowBuy(false)}>
+      <div style={{background:'rgba(239,68,68,0.08)',border:'1.5px solid var(--red)',borderRadius:10,padding:14,marginBottom:14,fontSize:12,color:'var(--red)',lineHeight:1.7}}>
+        ⚠️ No Escrow. OP_WALLET pops up to pay $3 fee. The asset price ({s2b(l.price)}) is paid directly to seller in chat.
+      </div>
+      <label style={{display:'flex',alignItems:'flex-start',gap:10,marginBottom:16,cursor:'pointer',fontSize:13}}>
+        <input type="checkbox" checked={buyAgreed} onChange={e=>setBuyAgreed(e.target.checked)} style={{marginTop:3,accentColor:'var(--orange)',width:15,height:15}}/>
+        I understand — transfer is manual via private chat
+      </label>
+      <div style={{background:'var(--bg3)',borderRadius:10,padding:'10px 14px',marginBottom:16}}>
+        <div style={{display:'flex',justifyContent:'space-between',fontSize:13,padding:'4px 0',borderBottom:'1px solid var(--border)'}}>
+          <span>Fee to treasury</span><span style={{fontFamily:'var(--mono)',color:'var(--orange)'}}>{s2b(FLAT_FEE)}</span>
+        </div>
+        <div style={{display:'flex',justifyContent:'space-between',fontSize:13,padding:'4px 0'}}>
+          <span>Asset price (pay seller in chat)</span><span style={{fontFamily:'var(--mono)',color:'var(--green)',fontWeight:700}}>{s2b(l.price)}</span>
+        </div>
+      </div>
+      <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
+        <button onClick={()=>setShowBuy(false)} style={{background:'transparent',border:'1.5px solid var(--border)',borderRadius:10,padding:'9px 18px',fontWeight:700,cursor:'pointer',fontSize:13,color:'var(--text)'}}>Cancel</button>
+        <button onClick={handleBuy} disabled={!buyAgreed||isBuying} style={btn('var(--green)',{opacity:(!buyAgreed||isBuying)?.45:1})}>{isBuying?<><span className="sp"/>Paying…</>:'💸 Pay $3 & Open Chat'}</button>
+      </div>
+    </ModalBox></Overlay>}
+
+    {showOffer&&<Overlay><ModalBox title="Make an Offer" onClose={()=>setShowOffer(false)}>
+      <div style={{background:'rgba(239,68,68,0.08)',border:'1.5px solid var(--red)',borderRadius:10,padding:14,marginBottom:14,fontSize:12,color:'var(--red)',lineHeight:1.7}}>
+        ⚠️ No Escrow. BTC is NOT locked. $3 fee paid now. If seller accepts, private chat opens for manual transfer.
+      </div>
+      <label style={{display:'flex',alignItems:'flex-start',gap:10,marginBottom:14,cursor:'pointer',fontSize:13}}>
+        <input type="checkbox" checked={offAgreed} onChange={e=>setOffAgreed(e.target.checked)} style={{marginTop:3,accentColor:'var(--orange)',width:15,height:15}}/>
+        I understand — transfer is manual via private chat
+      </label>
+      <div style={{fontSize:11,fontWeight:700,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:6}}>Your Offer (BTC)</div>
+      <input type="number" step="0.00001" min="0" placeholder="0.00100" value={offerBtc} onChange={e=>setOfferBtc(e.target.value)} autoFocus style={{...inp(false),marginBottom:8}}/>
+      {offerBtc&&!isNaN(parseFloat(offerBtc))&&<div style={{fontSize:11,color:'var(--muted)',fontFamily:'var(--mono)',marginBottom:12}}>{b2s(offerBtc).toLocaleString()} sats</div>}
+      <div style={{background:'var(--bg3)',borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:13,display:'flex',justifyContent:'space-between'}}>
+        <span>Fee to treasury</span><span style={{fontFamily:'var(--mono)',color:'var(--orange)'}}>{s2b(FLAT_FEE)}</span>
+      </div>
+      <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
+        <button onClick={()=>setShowOffer(false)} style={{background:'transparent',border:'1.5px solid var(--border)',borderRadius:10,padding:'9px 18px',fontWeight:700,cursor:'pointer',fontSize:13,color:'var(--text)'}}>Cancel</button>
+        <button onClick={handleOffer} disabled={!offAgreed||!offerBtc||parseFloat(offerBtc)<=0||isOffering} style={btn('var(--orange)',{opacity:(!offAgreed||!offerBtc||isOffering)?.45:1})}>{isOffering?<><span className="sp"/>Paying…</>:'💸 Pay $3 & Send Offer'}</button>
+      </div>
+    </ModalBox></Overlay>}
+
+    {chat&&<PrivateChat myAddr={chat.myAddr} otherAddr={chat.otherAddr} listingId={l.id} listingName={label} isSeller={isMine} onClose={()=>setChat(null)} onMarkComplete={isMine?()=>{onMarkComplete(l.id);setChat(null);}:null}/>}
+  </div>;
+}
+
+// ── CREATE LISTING ─────────────────────────────────────────────
+function CreateListingPage({wallet,onSubmit,onCancel,ld}){
+  const [assetType,setAssetType]=useState('OP_20');
+  const [contract,setContract]=useState('');
+  const [tokenInfo,setTokenInfo]=useState(null);
+  const [tokenErr,setTokenErr]=useState('');
+  const [validating,setValidating]=useState(false);
+  const [amount,setAmount]=useState('');
+  const [nftContract,setNftContract]=useState('');
+  const [nftId,setNftId]=useState('');
+  const [priceMode,setPriceMode]=useState('fixed');
+  const [priceBtc,setPriceBtc]=useState('');
+  const [desc,setDesc]=useState('');
+  const [emoji,setEmoji]=useState('');
+  const [agreed,setAgreed]=useState(false);
+  const [errors,setErrors]=useState({});
+  const timer=useRef(null);
+
+  const runVal=useCallback(async val=>{
+    setValidating(true);
+    const r=await validateToken(val);
+    setValidating(false);
+    if(r.valid){setTokenInfo(r);setTokenErr('');}else{setTokenInfo(null);setTokenErr(r.error);}
+  },[]);
+
+  const onContractChange=useCallback(val=>{
+    setContract(val);setTokenInfo(null);setTokenErr('');
+    clearTimeout(timer.current);
+    if(val.trim().length>=10) timer.current=setTimeout(()=>runVal(val.trim()),500);
+  },[runVal]);
+
+  const pickKnown=t=>{setContract(t.address);setTokenInfo({valid:true,...t});setTokenErr('');};
+
+  const validate=()=>{
+    const e={};
+    if(assetType==='OP_20'){
+      if(!contract.trim()) e.contract='Pick a suggested token or paste a contract address';
+      else if(tokenErr) e.contract=tokenErr;
+      else if(!tokenInfo) e.contract='Still validating…';
+      if(!amount||parseFloat(amount)<=0) e.amount='Enter amount to list';
+    }else{
+      if(!nftContract.trim()) e.nftContract='Paste the OP_721 contract address';
+      if(!nftId.trim()) e.nftId='Enter the NFT token ID';
+    }
+    if(priceMode==='fixed'&&(!priceBtc||parseFloat(priceBtc)<=0)) e.price='Enter a price';
+    if(!agreed) e.agreed='You must acknowledge the manual OTC notice';
+    setErrors(e); return !Object.keys(e).length;
+  };
+
+  const handleSubmit=()=>{
+    if(!wallet||!validate()) return;
+    onSubmit({
+      type:assetType,
+      contractAddress:assetType==='OP_20'?contract.trim():nftContract.trim(),
+      name:assetType==='OP_20'?(tokenInfo?.name||tokenInfo?.symbol||contract.slice(0,12)):(nftId?`NFT #${nftId}`:'NFT'),
+      symbol:assetType==='OP_20'?(tokenInfo?.symbol||null):null,
+      amount:assetType==='OP_20'?amount.trim():null,
+      nftId:assetType==='OP_721'?nftId.trim():null,
+      image:emoji||tokenInfo?.emoji||(assetType==='OP_721'?'🎨':'🔵'),
+      priceMode,price:priceMode==='fixed'?b2s(priceBtc):null,desc:desc.trim(),
+    });
+  };
+
+  if(!wallet) return <div style={{textAlign:'center',padding:'60px 20px'}}><div style={{fontSize:48,marginBottom:14}}>🔐</div><div style={{fontSize:18,fontWeight:700}}>Connect OP_WALLET first</div></div>;
+
+  const TabBtn=({v,label})=><button onClick={()=>assetType===v?null:setAssetType(v)} style={{flex:1,padding:12,borderRadius:10,border:`1.5px solid ${assetType===v?'var(--orange)':'var(--border)'}`,background:assetType===v?'var(--od)':'transparent',cursor:'pointer',fontSize:14,fontWeight:600,color:assetType===v?'var(--orange)':'var(--muted)',transition:'all 0.14s'}}>{label}</button>;
+  const PriceTab=({v,label})=><button onClick={()=>setPriceMode(v)} style={{flex:1,padding:12,borderRadius:10,border:`1.5px solid ${priceMode===v?'var(--orange)':'var(--border)'}`,background:priceMode===v?'var(--od)':'transparent',cursor:'pointer',fontSize:14,fontWeight:600,color:priceMode===v?'var(--orange)':'var(--muted)',transition:'all 0.14s'}}>{label}</button>;
+  const Label=({children})=><div style={{fontSize:11,fontWeight:700,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:6,marginTop:12}}>{children}</div>;
+  const Err=({msg})=>msg?<div style={{color:'var(--red)',fontSize:12,marginTop:4}}>⚠️ {msg}</div>:null;
+
+  return <div style={{maxWidth:580,margin:'0 auto'}} className="fi">
+    <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:20}}>
+      <button onClick={onCancel} style={{background:'none',border:'none',cursor:'pointer',color:'var(--muted)',fontSize:13,padding:0}}>← Back</button>
+      <h2 style={{fontSize:22,fontWeight:800}}>Create OTC Listing</h2>
+    </div>
+
+    <div style={{display:'flex',gap:14,background:'rgba(239,68,68,0.07)',border:'2px solid var(--red)',borderRadius:14,padding:18,marginBottom:16}}>
+      <span style={{fontSize:26,flexShrink:0}}>⚠️</span>
+      <div>
+        <div style={{fontWeight:800,fontSize:14,color:'var(--red)',marginBottom:6}}>No Escrow — Manual OTC</div>
+        <div style={{fontSize:12,color:'var(--muted)',lineHeight:1.7}}>Escrow is not yet deployed. Listing goes live but asset transfer is arranged manually via private chat between you and the buyer.</div>
+        <label style={{display:'flex',alignItems:'center',gap:10,marginTop:12,cursor:'pointer',fontSize:13,fontWeight:700}}>
+          <input type="checkbox" checked={agreed} onChange={e=>setAgreed(e.target.checked)} style={{width:15,height:15,accentColor:'var(--orange)'}}/>
+          I understand — I will transfer the asset manually via private chat
+        </label>
+        <Err msg={errors.agreed}/>
+      </div>
+    </div>
+
+    <div style={card({marginBottom:16})}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>1. Asset Type</div>
+      <div style={{display:'flex',gap:8}}><TabBtn v="OP_20" label="🔵 OP_20 Token"/><TabBtn v="OP_721" label="🎨 OP_721 NFT"/></div>
+    </div>
+
+    <div style={card({marginBottom:16})}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>2. Contract Address</div>
+      {assetType==='OP_20'&&<>
+        <Label>Suggested Tokens on OP_NET Testnet</Label>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:16}}>
+          {KNOWN_TOKENS.map(t=><button key={t.address} onClick={()=>pickKnown(t)}
+            style={{display:'flex',alignItems:'center',gap:8,padding:'8px 14px',borderRadius:10,border:`${tokenInfo?.symbol===t.symbol?'2px solid var(--orange)':'1.5px solid var(--border)'}`,background:tokenInfo?.symbol===t.symbol?'var(--od)':'var(--bg3)',cursor:'pointer',transition:'all 0.14s'}}>
+            <span style={{fontSize:20}}>{t.emoji}</span>
+            <div style={{textAlign:'left'}}>
+              <div style={{fontWeight:800,fontSize:13}}>{t.symbol}</div>
+              <div style={{fontSize:11,color:'var(--muted)'}}>{t.name}</div>
+            </div>
+          </button>)}
+        </div>
+        <Label>Or paste any OP_20 contract address</Label>
+        <div style={{position:'relative',marginBottom:8}}>
+          <input style={{...inp(!!errors.contract),paddingRight:36,borderColor:tokenInfo?'var(--green)':errors.contract?'var(--red)':'var(--border)'}} placeholder="opt1… or 0x…" value={contract} onChange={e=>onContractChange(e.target.value)} spellCheck={false}/>
+          {validating&&<span style={{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)'}}>⏳</span>}
+          {tokenInfo&&!validating&&<span style={{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',color:'var(--green)'}}>✅</span>}
+        </div>
+        {tokenInfo&&<div style={{display:'flex',alignItems:'center',gap:12,padding:'12px 14px',borderRadius:10,border:'1.5px solid var(--green)',background:'var(--gd)',marginBottom:8}}>
+          <span style={{fontSize:28}}>{tokenInfo.emoji||'🔵'}</span>
+          <div>
+            {tokenInfo.symbol?<><div style={{fontWeight:800,fontSize:15}}>{tokenInfo.name}</div><div style={{fontSize:13,color:'var(--orange)',fontWeight:700}}>{tokenInfo.symbol}</div></>
+              :<div style={{fontWeight:700,color:'var(--orange)'}}>Valid format ✓ — name loads on-chain</div>}
+          </div>
+          <a href={`https://opscan.org/address/${contract}?network=op_testnet`} target="_blank" rel="noopener" style={{marginLeft:'auto',fontSize:11,color:'var(--orange)',textDecoration:'none'}}>opscan ↗</a>
+        </div>}
+        <Err msg={errors.contract}/>
+        <Label>Amount {tokenInfo?.symbol?`(${tokenInfo.symbol})`:''}</Label>
+        <input type="number" min="0" step="any" placeholder="e.g. 1000" value={amount} onChange={e=>setAmount(e.target.value)} style={inp(!!errors.amount)}/>
+        <Err msg={errors.amount}/>
+      </>}
+      {assetType==='OP_721'&&<>
+        <Label>OP_721 Contract Address</Label>
+        <input placeholder="opt1… or 0x…" value={nftContract} onChange={e=>setNftContract(e.target.value)} spellCheck={false} style={inp(!!errors.nftContract)}/>
+        <Err msg={errors.nftContract}/>
+        <Label>NFT Token ID</Label>
+        <input placeholder="e.g. 441" value={nftId} onChange={e=>setNftId(e.target.value)} style={inp(!!errors.nftId)}/>
+        <Err msg={errors.nftId}/>
+      </>}
+      <Label>Custom Emoji (optional)</Label>
+      <input placeholder="🚀" value={emoji} onChange={e=>setEmoji(e.target.value)} maxLength={2} style={{width:72,padding:'10px 14px',borderRadius:10,background:'var(--bg3)',border:'1.5px solid var(--border)',color:'var(--text)',fontSize:13,outline:'none'}}/>
+    </div>
+
+    <div style={card({marginBottom:16})}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>3. Pricing</div>
+      <div style={{display:'flex',gap:8,marginBottom:14}}><PriceTab v="fixed" label="💰 Fixed Price"/><PriceTab v="offers" label="🤝 Accept Offers"/></div>
+      {priceMode==='fixed'&&<>
+        <Label>Price (BTC)</Label>
+        <input type="number" step="0.00001" min="0" placeholder="0.00500" value={priceBtc} onChange={e=>setPriceBtc(e.target.value)} style={inp(!!errors.price)}/>
+        {priceBtc&&!isNaN(parseFloat(priceBtc))&&<div style={{fontSize:11,color:'var(--muted)',marginTop:4,fontFamily:'var(--mono)'}}>{b2s(priceBtc).toLocaleString()} sats</div>}
+        <Err msg={errors.price}/>
+      </>}
+      <div style={{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:10,padding:'12px 14px',marginTop:12}}>
+        <div style={{fontWeight:700,fontSize:12,color:'var(--orange)',marginBottom:8}}>💸 On Submit — OP_WALLET will pop up</div>
+        <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--muted)',padding:'4px 0',borderBottom:'1px solid var(--border)'}}>
+          <span>Flat listing fee (~$3 USD)</span><span style={{fontFamily:'var(--mono)',color:'var(--text)'}}>{s2b(FLAT_FEE)}</span>
+        </div>
+        <div style={{fontSize:11,color:'var(--muted)',paddingTop:8}}>Paid to treasury. No % cut from your tokens.</div>
+      </div>
+    </div>
+
+    <div style={card({marginBottom:16})}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:16}}>4. Description (Optional)</div>
+      <textarea rows={3} placeholder="Notes for the buyer…" value={desc} onChange={e=>setDesc(e.target.value)} maxLength={500} style={{...inp(false),resize:'vertical'}}/>
+      <div style={{textAlign:'right',fontSize:11,color:'var(--muted)',marginTop:4}}>{desc.length}/500</div>
+    </div>
+
+    <button onClick={handleSubmit} disabled={ld==='creating'} style={btn('var(--orange)',{width:'100%',justifyContent:'center',padding:15,fontSize:15,marginTop:4,opacity:ld==='creating'?.7:1})}>
+      {ld==='creating'?<><span className="sp"/>Waiting for wallet confirmation…</>:'💸 Pay $3 Fee & Go Live'}
+    </button>
+  </div>;
+}
+
+// ── DASHBOARD ──────────────────────────────────────────────────
+function DashboardPage({wallet,myListings,myOffers,receivedOffers,onCancel,onAcceptOffer,onRejectOffer,onMarkComplete,ld}){
+  const [tab,setTab]=useState('listings');
+  const [chat,setChat]=useState(null);
+
+  if(!wallet) return <div style={{textAlign:'center',padding:'60px 20px'}}><div style={{fontSize:48,marginBottom:14}}>🔐</div><div style={{fontSize:18,fontWeight:700}}>Connect OP_WALLET to view dashboard</div></div>;
+
+  const myChats=getMyChats(wallet.address);
+  const allListings=getL();
+
+  const TABS=[{id:'listings',label:`My Listings (${myListings.length})`},{id:'sent',label:`Offers Sent (${myOffers.length})`},{id:'recv',label:`Offers Received (${receivedOffers.length})`},{id:'chats',label:`💬 Chats (${myChats.length})`}];
+  const abtn=(label,bg,onClick,disabled)=><button onClick={onClick} disabled={disabled} style={btn(bg,{fontSize:11,padding:'5px 10px',borderRadius:8,opacity:disabled?.45:1})}>{label}</button>;
+  const Th=({children})=><th style={{fontSize:11,textTransform:'uppercase',letterSpacing:'.5px',color:'var(--muted)',padding:'10px 12px',textAlign:'left',borderBottom:'1px solid var(--border)',background:'var(--bg3)',whiteSpace:'nowrap'}}>{children}</th>;
+  const Td=({children,extra})=><td style={{padding:'10px 12px',fontSize:13,borderBottom:'1px solid var(--border)',verticalAlign:'middle',...extra}}>{children}</td>;
+
+  return <div className="fi">
+    <h2 style={{fontSize:22,fontWeight:800,marginBottom:6}}>My Dashboard</h2>
+    <div style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--muted)',marginBottom:20,wordBreak:'break-all'}}>{wallet.address}</div>
+    <div style={{display:'flex',gap:4,background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:10,padding:4,marginBottom:20,flexWrap:'wrap',width:'fit-content'}}>
+      {TABS.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{padding:'7px 12px',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:tab===t.id?'#fff':'var(--muted)',border:'none',background:tab===t.id?'var(--orange)':'none',whiteSpace:'nowrap',transition:'all 0.14s'}}>{t.label}</button>)}
+    </div>
+
+    {tab==='listings'&&(myListings.length===0
+      ?<div style={{textAlign:'center',padding:'40px',color:'var(--muted)'}}><div style={{fontSize:40,marginBottom:12}}>📋</div><div style={{fontSize:16,fontWeight:700}}>No listings yet</div></div>
+      :<div style={{overflowX:'auto',border:'1px solid var(--border)',borderRadius:'var(--radius)'}}>
+        <table style={{width:'100%',borderCollapse:'collapse'}}>
+          <thead><tr><Th>Asset</Th><Th>Price</Th><Th>Status</Th><Th>Posted</Th><Th>Actions</Th></tr></thead>
+          <tbody>{myListings.map(l=><tr key={l.id}>
+            <Td><strong>{l.type==='OP_20'?`${l.amount} ${l.symbol||''}`:l.name}</strong></Td>
+            <Td>{l.priceMode==='fixed'?<span style={{fontFamily:'var(--mono)',color:'var(--green)',fontSize:12}}>{s2b(l.price)}</span>:'🤝 Offers'}</Td>
+            <Td><Badge status={l.status}/></Td>
+            <Td extra={{color:'var(--muted)',fontSize:12}}>{ago(l.posted)}</Td>
+            <Td><div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {l.status==='active'&&abtn('Cancel','var(--red)',()=>onCancel(l.id),false)}
+              {(l.status==='pending_transfer'||l.status==='active')&&l.buyerAddress&&abtn('💬 Chat','var(--orange)',()=>setChat({myAddr:wallet.address,otherAddr:l.buyerAddress,listingId:l.id,listingName:l.type==='OP_20'?`${l.amount} ${l.symbol||''}`:l.name}),false)}
+              {l.status==='pending_transfer'&&abtn('✅ Complete','var(--green)',()=>onMarkComplete(l.id),false)}
+            </div></Td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+    )}
+
+    {tab==='sent'&&(myOffers.length===0
+      ?<div style={{textAlign:'center',padding:'40px',color:'var(--muted)'}}><div style={{fontSize:40,marginBottom:12}}>🤝</div><div style={{fontSize:16,fontWeight:700}}>No offers sent yet</div></div>
+      :<div style={{overflowX:'auto',border:'1px solid var(--border)',borderRadius:'var(--radius)'}}>
+        <table style={{width:'100%',borderCollapse:'collapse'}}>
+          <thead><tr><Th>Listing</Th><Th>Offer</Th><Th>Status</Th><Th>Date</Th><Th>Actions</Th></tr></thead>
+          <tbody>{myOffers.map(o=>{
+            const listing=allListings.find(l=>l.id===o.listingId);
+            return <tr key={o.id}>
+              <Td><strong>{o.listingName}</strong></Td>
+              <Td><span style={{fontFamily:'var(--mono)',color:'var(--orange)',fontWeight:800}}>{s2b(o.amount)}</span></Td>
+              <Td><Badge status={o.status}/></Td>
+              <Td extra={{color:'var(--muted)',fontSize:12}}>{ago(o.date)}</Td>
+              <Td>{o.status==='accepted'&&listing&&abtn('💬 Open Chat','var(--orange)',()=>setChat({myAddr:wallet.address,otherAddr:listing.seller,listingId:o.listingId,listingName:o.listingName}),false)}</Td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
+    )}
+
+    {tab==='recv'&&(receivedOffers.length===0
+      ?<div style={{textAlign:'center',padding:'40px',color:'var(--muted)'}}><div style={{fontSize:40,marginBottom:12}}>📬</div><div style={{fontSize:16,fontWeight:700}}>No offers received yet</div></div>
+      :<div style={{overflowX:'auto',border:'1px solid var(--border)',borderRadius:'var(--radius)'}}>
+        <table style={{width:'100%',borderCollapse:'collapse'}}>
+          <thead><tr><Th>Listing</Th><Th>From</Th><Th>Offer</Th><Th>Actions</Th></tr></thead>
+          <tbody>{receivedOffers.map(o=><tr key={o.id}>
+            <Td><strong>{o.listingName}</strong></Td>
+            <Td extra={{fontFamily:'var(--mono)',fontSize:11,color:'var(--muted)'}}>{short(o.from)}</Td>
+            <Td><span style={{fontFamily:'var(--mono)',color:'var(--orange)',fontWeight:800,fontSize:14}}>{s2b(o.amount)}</span></Td>
+            <Td><div style={{display:'flex',gap:6}}>
+              {abtn('✅ Accept & Chat','var(--green)',async()=>{const r=await onAcceptOffer(o.id);if(r?.chatWith)setChat({myAddr:wallet.address,otherAddr:r.chatWith,listingId:o.listingId,listingName:o.listingName});},ld==='accept_'+o.id)}
+              {abtn('Reject','var(--red)',()=>onRejectOffer(o.id),false)}
+            </div></Td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+    )}
+
+    {tab==='chats'&&(myChats.length===0
+      ?<div style={{textAlign:'center',padding:'40px',color:'var(--muted)'}}><div style={{fontSize:40,marginBottom:12}}>💬</div><div style={{fontSize:16,fontWeight:700,marginBottom:8}}>No active chats</div><div style={{fontSize:14}}>Chats appear here after you buy, sell, or accept an offer</div></div>
+      :<div style={{display:'flex',flexDirection:'column',gap:10}}>
+        {myChats.map(room=>{
+          const lst=allListings.find(l=>l.id===room.listingId);
+          const name=lst?(lst.type==='OP_20'?`${lst.amount} ${lst.symbol||''}`:lst.name):room.listingId;
+          return <div key={room.key} onClick={()=>setChat({myAddr:wallet.address,otherAddr:room.otherAddr,listingId:room.listingId,listingName:name})}
+            style={{background:'var(--bg2)',border:'1.5px solid var(--border)',borderRadius:12,padding:'14px 18px',cursor:'pointer',display:'flex',alignItems:'center',gap:14,transition:'all 0.15s'}}
+            onMouseEnter={e=>e.currentTarget.style.borderColor='var(--orange)'}
+            onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
+            <div style={{width:44,height:44,borderRadius:'50%',background:'var(--od)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>💬</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:700,fontSize:14,marginBottom:2}}>{name}</div>
+              <div style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--muted)'}}>with {short(room.otherAddr)}</div>
+              <div style={{fontSize:12,color:'var(--muted)',marginTop:4,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{room.lastMsg.from===wallet.address?'You: ':''}{room.lastMsg.text}</div>
+            </div>
+            <div style={{fontSize:11,color:'var(--muted)',flexShrink:0}}>{ago(room.lastMsg.ts)}</div>
+          </div>;
+        })}
+      </div>
+    )}
+
+    {chat&&<PrivateChat myAddr={chat.myAddr} otherAddr={chat.otherAddr} listingId={chat.listingId} listingName={chat.listingName} isSeller={myListings.some(l=>l.id===chat.listingId)} onClose={()=>setChat(null)} onMarkComplete={myListings.some(l=>l.id===chat.listingId)?()=>{onMarkComplete(chat.listingId);setChat(null);}:null}/>}
+  </div>;
+}
+
+// ── OTHER PAGES ────────────────────────────────────────────────
+function HistoryPage({wallet,txs}){
+  if(!wallet) return <div style={{textAlign:'center',padding:'60px 20px'}}><div style={{fontSize:48,marginBottom:14}}>🔐</div><div style={{fontSize:18,fontWeight:700}}>Connect wallet to view history</div></div>;
+  const addr=wallet.address;
+  const myTxs=txs.filter(t=>t.buyer===addr||t.seller===addr||t.actor===addr);
+  if(!myTxs.length) return <div style={{textAlign:'center',padding:'60px 20px',color:'var(--muted)'}}><div style={{fontSize:48,marginBottom:14}}>📜</div><div style={{fontSize:18,fontWeight:700}}>No transactions yet</div></div>;
+  return <div className="fi">
+    <h2 style={{fontSize:22,fontWeight:800,marginBottom:20}}>Transaction History</h2>
+    <div style={{overflowX:'auto',border:'1px solid var(--border)',borderRadius:'var(--radius)'}}>
+      <table style={{width:'100%',borderCollapse:'collapse'}}>
+        <thead><tr>{['Type','Listing','Fee','Date'].map(h=><th key={h} style={{fontSize:11,textTransform:'uppercase',letterSpacing:'.5px',color:'var(--muted)',padding:'10px 12px',textAlign:'left',borderBottom:'1px solid var(--border)',background:'var(--bg3)'}}>{h}</th>)}</tr></thead>
+        <tbody>{myTxs.map(t=><tr key={t.id}>
+          <td style={{padding:'10px 12px',fontSize:13,borderBottom:'1px solid var(--border)'}}><span style={{background:'var(--od)',color:'var(--orange)',padding:'3px 10px',borderRadius:99,fontSize:11,fontWeight:800,fontFamily:'var(--mono)'}}>{t.type}</span></td>
+          <td style={{padding:'10px 12px',fontSize:11,borderBottom:'1px solid var(--border)',fontFamily:'var(--mono)',color:'var(--muted)'}}>{t.listingId||'—'}</td>
+          <td style={{padding:'10px 12px',fontSize:13,borderBottom:'1px solid var(--border)',fontFamily:'var(--mono)',color:'var(--orange)'}}>{(t.fee||FLAT_FEE).toLocaleString()}</td>
+          <td style={{padding:'10px 12px',fontSize:12,borderBottom:'1px solid var(--border)',color:'var(--muted)'}}>{ago(t.date)}</td>
+        </tr>)}</tbody>
+      </table>
+    </div>
+  </div>;
+}
+
+function LearnPage(){
+  const cards=[['₿','What is OP_NET?','OP_NET is a smart contract layer built on Bitcoin L1 using OP_CAT. It enables programmable tokens and NFTs to exist natively on Bitcoin.'],['🔵','OP_20 Tokens','OP_20 is the Bitcoin equivalent of ERC-20. Fungible tokens like $MOTO or $PILLS that live directly on Bitcoin via OP_NET.'],['🎨','OP_721 NFTs','OP_721 is the Bitcoin equivalent of ERC-721. Unique digital assets verifiable on-chain via opscan.org.'],['💬','Manual OTC','Since escrow is not deployed yet, trades are arranged via private chat. Buyer and seller agree on who sends first, then transfer wallet-to-wallet.'],['💸','$3 Fee Model','Each action pays a flat ~$3 fee in BTC to the treasury. No % cut from your tokens.'],['⚡','Escrow Coming Soon','Once XchangeEscrow is deployed, all trades will be fully atomic — tokens and BTC swap simultaneously, trustlessly.']];
+  return <div className="fi">
+    <h2 style={{fontSize:22,fontWeight:800,marginBottom:6}}>Learn</h2>
+    <p style={{color:'var(--muted)',fontSize:14,marginBottom:24}}>Everything you need to know about XCHANGE and OP_NET.</p>
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:16}}>
+      {cards.map(([icon,title,desc])=><div key={title} style={card()}>
+        <div style={{fontSize:32,marginBottom:12}}>{icon}</div>
+        <h3 style={{fontSize:16,fontWeight:700,marginBottom:8}}>{title}</h3>
+        <p style={{fontSize:13,color:'var(--muted)',lineHeight:1.75}}>{desc}</p>
+      </div>)}
+    </div>
+  </div>;
+}
+
+function AboutPage(){
+  return <div className="fi" style={{maxWidth:640}}>
+    <h2 style={{fontSize:22,fontWeight:800,marginBottom:20}}>About XCHANGE</h2>
+    <div style={card({marginBottom:16})}>
+      <p style={{fontSize:14,color:'var(--muted)',lineHeight:1.9}}>XCHANGE is a fully decentralized OTC peer-to-peer marketplace for trading OP_20 tokens and OP_721 NFTs directly against BTC on Bitcoin Layer 1 via OP_NET.<br/><br/>Currently in testnet phase with manual OTC trading via private chat. On-chain escrow is coming soon.<br/><br/><strong>Treasury: </strong><code style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--orange)',wordBreak:'break-all'}}>{TREASURY}</code></p>
+    </div>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+      {[['🔐 Non-Custodial','Your assets never leave your wallet until you send them'],['⛓️ Bitcoin L1','Built on Bitcoin via OP_NET smart contracts'],['💬 Private Chats','End-to-end private OTC negotiation'],['⚡ Escrow Soon','Atomic swaps coming with escrow contract']].map(([t,d])=>
+        <div key={t} style={card({padding:16})}><div style={{fontWeight:700,marginBottom:6,fontSize:14}}>{t}</div><div style={{fontSize:12,color:'var(--muted)',lineHeight:1.6}}>{d}</div></div>
+      )}
+    </div>
+  </div>;
+}
+
+function SocialPage(){
+  return <div style={{textAlign:'center',padding:'60px 20px'}}>
+    <div style={{fontSize:52,marginBottom:16}}>🌐</div>
+    <h2 style={{fontSize:24,fontWeight:800,marginBottom:8}}>Social OTC</h2>
+    <p style={{fontSize:14,color:'var(--muted)',maxWidth:400,margin:'0 auto 20px',lineHeight:1.7}}>Connect with traders on social platforms. Coming soon.</p>
+    <span style={{background:'var(--od)',color:'var(--orange)',border:'1px solid var(--orange)',padding:'5px 16px',borderRadius:99,fontSize:12,fontFamily:'var(--mono)',fontWeight:800}}>COMING SOON</span>
+  </div>;
+}
+
+// ── MAIN APP ───────────────────────────────────────────────────
+const NAV=[{id:'market',label:'🏪 Market'},{id:'social',label:'🌐 Social',badge:'SOON'},{id:'create',label:'➕ Create'},{id:'dashboard',label:'📊 Dashboard'},{id:'history',label:'📜 History'},{id:'learn',label:'📖 Learn'},{id:'about',label:'ℹ️ About'}];
+
+function App(){
+  const [dark,setDark]=useState(true);
+  const [tab,setTab]=useState('market');
+  const [selected,setSelected]=useState(null);
+  const [wallet,setWallet]=useState(null);
+  const [connecting,setConnecting]=useState(false);
+
+  const {activeListings,myListings,myOffers,receivedOffers,offers,txs,ld,createListing,cancelListing,buyListing,makeOffer,acceptOffer,rejectOffer,markComplete}=useListings(wallet);
+  const {toasts,add:toast}=useToast();
+
+  useEffect(()=>{
+    const s=localStorage.getItem('xc_dark');
+    if(s!==null) setDark(s==='true');
+  },[]);
+  useEffect(()=>{ document.documentElement.className=dark?'':'light'; localStorage.setItem('xc_dark',dark); },[dark]);
+
+  const connect=async()=>{
+    setConnecting(true);
+    try{ const w=await connectWallet(); setWallet(w); toast('✅ Wallet connected!'); }
+    catch(e){ toast('❌ '+e.message,'error'); }
+    finally{ setConnecting(false); }
+  };
+
+  const go=t=>{setTab(t);setSelected(null);};
+
+  const handleCreate=async data=>{
+    try{ await createListing(data); toast('✅ Listing live! $3 fee sent to treasury.'); go('market'); }
+    catch(e){ toast('❌ '+e.message,'error'); }
+  };
+  const handleBuy=async listing=>{
+    try{ const r=await buyListing(listing); toast('✅ $3 fee paid. Private chat opened!'); return r; }
+    catch(e){ toast('❌ '+e.message,'error'); }
+  };
+  const handleOffer=async(lid,lname,seller,btc)=>{
+    try{ const r=await makeOffer(lid,lname,seller,btc); toast('✅ $3 fee paid. Offer sent!'); return r; }
+    catch(e){ toast('❌ '+e.message,'error'); }
+  };
+  const handleAccept=async oid=>{
+    try{ const r=await acceptOffer(oid); toast('✅ Offer accepted! Chat opened.'); return r; }
+    catch(e){ toast('❌ '+e.message,'error'); }
+  };
+  const handleComplete=lid=>{ markComplete(lid); toast('✅ Marked complete!'); };
+
+  return <div style={{minHeight:'100vh',display:'flex',flexDirection:'column'}}>
+    <header style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',height:58,background:'var(--bg2)',borderBottom:'1px solid var(--border)',position:'sticky',top:0,zIndex:100}}>
+      <div onClick={()=>go('market')} style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer'}}>
+        <span style={{fontSize:26}}>₿</span>
+        <div>
+          <div style={{fontSize:18,fontWeight:800,lineHeight:1}}>X<span style={{color:'var(--orange)'}}>CHANGE</span></div>
+          <div style={{fontSize:9,color:'var(--muted)',fontFamily:'var(--mono)'}}>OTC P2P · Bitcoin L1 · 🧪 Testnet</div>
+        </div>
+      </div>
+      <div style={{display:'flex',alignItems:'center',gap:8}}>
+        <button onClick={()=>setDark(d=>!d)} style={{background:'none',border:'none',cursor:'pointer',fontSize:18,padding:'6px 8px'}}>{dark?'☀️':'🌙'}</button>
+        <WalletButton wallet={wallet} connecting={connecting} installed={hasWallet()} onConnect={connect} onDisconnect={()=>setWallet(null)}/>
+      </div>
+    </header>
+
+    <nav style={{display:'flex',padding:'0 8px',background:'var(--bg2)',borderBottom:'1px solid var(--border)',overflowX:'auto',scrollbarWidth:'none'}}>
+      {NAV.map(n=><button key={n.id} onClick={()=>go(n.id)} style={{padding:'10px 10px',fontSize:12,fontWeight:600,cursor:'pointer',border:'none',background:'none',borderBottom:`2.5px solid ${tab===n.id&&!selected?'var(--orange)':'transparent'}`,color:tab===n.id&&!selected?'var(--orange)':'var(--muted)',transition:'all 0.15s',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:4}}>
+        {n.label}
+        {n.badge&&<span style={{background:'var(--orange)',color:'#fff',fontSize:8,fontWeight:800,padding:'1px 4px',borderRadius:99,fontFamily:'var(--mono)'}}>{n.badge}</span>}
+      </button>)}
+    </nav>
+
+    <main style={{flex:1,padding:'16px',maxWidth:1200,margin:'0 auto',width:'100%',boxSizing:'border-box'}}>
+      {tab==='market'&&!selected&&<MarketPage listings={activeListings} offers={offers} onSelect={setSelected} onCreateListing={()=>go('create')} wallet={wallet}/>}
+      {tab==='market'&&selected&&<ListingDetailPage listing={selected} offers={offers} onBack={()=>setSelected(null)} onBuy={handleBuy} onOffer={handleOffer} onAcceptOffer={handleAccept} onMarkComplete={handleComplete} wallet={wallet} ld={ld}/>}
+      {tab==='create'&&<CreateListingPage wallet={wallet} onSubmit={handleCreate} onCancel={()=>go('market')} ld={ld}/>}
+      {tab==='dashboard'&&<DashboardPage wallet={wallet} myListings={myListings} myOffers={myOffers} receivedOffers={receivedOffers} onCancel={cancelListing} onAcceptOffer={handleAccept} onRejectOffer={rejectOffer} onMarkComplete={handleComplete} ld={ld}/>}
+      {tab==='history'&&<HistoryPage wallet={wallet} txs={txs}/>}
+      {tab==='learn'&&<LearnPage/>}
+      {tab==='about'&&<AboutPage/>}
+      {tab==='social'&&<SocialPage/>}
+    </main>
+
+    <div style={{position:'fixed',bottom:20,right:20,zIndex:9999,display:'flex',flexDirection:'column',gap:8}}>
+      {toasts.map(t=><div key={t.id} style={{background:'var(--bg2)',border:`1.5px solid ${t.type==='error'?'var(--red)':'var(--green)'}`,padding:'12px 16px',borderRadius:10,fontSize:13,boxShadow:'var(--shadow)',maxWidth:300}}>{t.msg}</div>)}
+    </div>
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
